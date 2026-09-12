@@ -22,6 +22,21 @@ export const colors = {
   gradientBackground: ['#FCF2FB', '#F4E6F9', '#EBD9F5'] as const,
   blobPink: ['#F9C4EC', '#F2A5E0'] as const,
   blobPurple: ['#EAD3FB', '#C9A6F2'] as const,
+  success: '#227A4A',
+  statusCardBackground: 'rgba(255, 255, 255, 0.84)',
+  disabledButtonBackground: 'rgba(50, 21, 101, 0.08)',
+  disabledButtonText: '#4B2C82',
+  progressTrackInactive: 'rgba(50, 21, 101, 0.14)',
+  infoBadgeBackground: '#EFE3FB',
+  moodGoodLabel: '#C2569F',
+  moodLowLabel: '#4B6BC4',
+  moodGoodCardGradient: ['#FFF3FC', '#FBDDF3'] as const,
+  moodLowCardGradient: ['#F3F7FF', '#E1EAFD'] as const,
+  moodLowBorder: 'rgba(147, 179, 251, 0.6)',
+  chipBackground: 'rgba(255, 255, 255, 0.78)',
+  moodGoodChipSelected: '#FDEBF7',
+  moodLowChipSelected: '#EDF3FE',
+  warning: '#C24444',
 } as const;
 
 export const fontFamily = {
@@ -74,6 +89,12 @@ export const typography = {
     fontFamily: fontFamily.regular,
     fontSize: 15.5,
     lineHeight: 24,
+    color: colors.body,
+  },
+  bodyCentered: {
+    fontFamily: fontFamily.regular,
+    fontSize: 15,
+    lineHeight: 23.25,
     color: colors.body,
   },
   button: {
