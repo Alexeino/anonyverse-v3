@@ -6,6 +6,7 @@ import { GreetingBubbles } from '../../components/GreetingBubbles/GreetingBubble
 import { MascotDuo } from '../../components/MascotDuo/MascotDuo';
 import { PrimaryButton } from '../../components/PrimaryButton/PrimaryButton';
 import { colors, spacing, typography } from '../../design/tokens';
+import { restAuthService } from '../../services/auth/restAuthService';
 import { secureDeviceIdentityService } from '../../services/deviceIdentity/secureDeviceIdentityService';
 import { useEntryController, type EntryDestination } from './useEntryController';
 
@@ -22,8 +23,9 @@ export interface EntryScreenProps {
  *    a CTA, before automatically continuing to Chat List.
  */
 export function EntryScreen({ onContinue }: EntryScreenProps) {
-  const { phase, handleStart } = useEntryController(
+  const { phase, isContinuing, handleStart } = useEntryController(
     secureDeviceIdentityService,
+    restAuthService,
     onContinue,
   );
 
@@ -54,7 +56,9 @@ export function EntryScreen({ onContinue }: EntryScreenProps) {
 
           <View style={styles.spacer} />
 
-          {phase === 'first_time_ready' ? (
+          {isContinuing ? (
+            <PrimaryButton variant="loading" label="Taking you in…" />
+          ) : phase === 'ready' ? (
             <PrimaryButton variant="action" label="Let's start" onPress={handleStart} />
           ) : (
             <PrimaryButton variant="loading" label="Getting things ready…" />

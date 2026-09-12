@@ -18,12 +18,17 @@ type PrimaryButtonProps =
   | {
       variant: 'loading';
       label: string;
+    }
+  | {
+      variant: 'disabled';
+      label: string;
     };
 
 /**
- * Shared pill-shaped primary CTA, matching node 10:786 ("Let's start") and
- * its in-progress counterpart node 16:1540 ("Getting things ready...") in
- * the Entry Figma frames.
+ * Shared pill-shaped primary CTA, matching node 10:786 ("Let's start") /
+ * 16:1540 ("Getting things ready...") / 10:810 ("Please wait...", the
+ * flat non-interactive variant) / 10:835 ("Continue") in the Entry and
+ * Verification Figma frames.
  *
  * The source design draws the loading state's indicator as a static ring
  * glyph; that is rendered here as a real spinning ActivityIndicator so the
@@ -35,6 +40,16 @@ export function PrimaryButton(props: PrimaryButtonProps) {
       <View style={styles.button}>
         <ActivityIndicator color={colors.white} size="small" />
         <Text style={[typography.button, styles.label]}>{props.label}</Text>
+      </View>
+    );
+  }
+
+  if (props.variant === 'disabled') {
+    return (
+      <View style={[styles.button, styles.buttonDisabled]}>
+        <Text style={[typography.button, styles.label, styles.labelDisabled]}>
+          {props.label}
+        </Text>
       </View>
     );
   }
@@ -71,8 +86,18 @@ const styles = StyleSheet.create({
   buttonPressed: {
     opacity: 0.85,
   },
+  buttonDisabled: {
+    backgroundColor: colors.disabledButtonBackground,
+    shadowOpacity: 0,
+    elevation: 0,
+  },
   label: {
     textAlign: 'center',
+  },
+  labelDisabled: {
+    color: colors.disabledButtonText,
+    fontFamily: typography.body.fontFamily,
+    fontSize: 13,
   },
   arrow: {
     fontFamily: typography.button.fontFamily,
