@@ -14,6 +14,11 @@ export type StatusCardProps =
       subtitle: string;
     }
   | {
+      variant: 'error';
+      title: string;
+      subtitle: string;
+    }
+  | {
       variant: 'info';
       title: string;
       subtitle: string;
@@ -35,6 +40,10 @@ export function StatusCard(props: StatusCardProps) {
       ) : props.variant === 'success' ? (
         <View style={styles.checkBadge}>
           <Text style={styles.checkMark}>{'✓'}</Text>
+        </View>
+      ) : props.variant === 'error' ? (
+        <View style={styles.errorBadge}>
+          <Text style={styles.errorMark}>{'!'}</Text>
         </View>
       ) : (
         <View style={styles.infoBadge}>
@@ -74,6 +83,19 @@ const styles = StyleSheet.create({
   },
   checkMark: {
     color: colors.white,
+    fontFamily: typography.headline.fontFamily,
+    fontSize: 19,
+  },
+  errorBadge: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.dangerBadgeBackground,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorMark: {
+    color: colors.danger,
     fontFamily: typography.headline.fontFamily,
     fontSize: 19,
   },
