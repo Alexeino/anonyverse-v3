@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { AuthService } from '../../services/auth/AuthService';
 import type { DeviceIdentityService } from '../../services/deviceIdentity/DeviceIdentityService';
+import type { SessionStore } from '../../services/session/SessionStore';
 
 /**
  * Where the Entry screen hands off to once its job is done. These are not
@@ -36,6 +37,7 @@ export interface UseEntryControllerResult {
 export function useEntryController(
   deviceIdentityService: DeviceIdentityService,
   authService: AuthService,
+  sessionStore: SessionStore,
   onContinue: (destination: EntryDestination) => void,
 ): UseEntryControllerResult {
   const [phase, setPhase] = useState<EntryPhase>('checking');
@@ -70,6 +72,7 @@ export function useEntryController(
           if (outcome.deviceId !== deviceId) {
             await deviceIdentityService.setDeviceId(outcome.deviceId);
           }
+          sessionStore.setToken(outcome.token);
           if (__DEV__) {
             console.log(
               `[Entry] Device "${outcome.deviceId}" exists and is verified — no verification required.`,
@@ -105,7 +108,7 @@ export function useEntryController(
     return () => {
       cancelled = true;
     };
-  }, [deviceIdentityService, authService]);
+  }, [deviceIdentityService, authService, sessionStore]);
 
   useEffect(() => {
     if (!isContinuing) {

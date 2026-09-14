@@ -8,6 +8,7 @@ import { PrimaryButton } from '../../components/PrimaryButton/PrimaryButton';
 import { colors, spacing, typography } from '../../design/tokens';
 import { restAuthService } from '../../services/auth/restAuthService';
 import { secureDeviceIdentityService } from '../../services/deviceIdentity/secureDeviceIdentityService';
+import { inMemorySessionStore } from '../../services/session/inMemorySessionStore';
 import { useEntryController, type EntryDestination } from './useEntryController';
 
 export interface EntryScreenProps {
@@ -26,6 +27,7 @@ export function EntryScreen({ onContinue }: EntryScreenProps) {
   const { phase, isContinuing, handleStart } = useEntryController(
     secureDeviceIdentityService,
     restAuthService,
+    inMemorySessionStore,
     onContinue,
   );
 

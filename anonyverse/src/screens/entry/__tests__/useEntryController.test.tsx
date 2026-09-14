@@ -3,6 +3,7 @@ import ReactTestRenderer, { act } from 'react-test-renderer';
 import type { AuthService } from '../../../services/auth/AuthService';
 import type { GetStartedOutcome } from '../../../services/auth/types';
 import type { DeviceIdentityService } from '../../../services/deviceIdentity/DeviceIdentityService';
+import type { SessionStore } from '../../../services/session/SessionStore';
 import { useEntryController, type EntryDestination } from '../useEntryController';
 
 function makeDeviceIdentityService(deviceId: string | null): DeviceIdentityService {
@@ -20,23 +21,37 @@ function makeAuthService(outcome: GetStartedOutcome): AuthService {
   };
 }
 
+function makeSessionStore(): SessionStore {
+  return {
+    getToken: jest.fn(() => null),
+    setToken: jest.fn(),
+    clear: jest.fn(),
+  };
+}
+
 function Harness({
   deviceIdentityService,
   authService,
+  sessionStore,
   onContinue,
   onReady,
 }: {
   deviceIdentityService: DeviceIdentityService;
   authService: AuthService;
+  sessionStore: SessionStore;
   onContinue: (destination: EntryDestination) => void;
   onReady: (result: ReturnType<typeof useEntryController>) => void;
 }) {
-  const result = useEntryController(deviceIdentityService, authService, onContinue);
+  const result = useEntryController(deviceIdentityService, authService, sessionStore, onContinue);
   onReady(result);
   return null;
 }
 
-async function render(deviceIdentityService: DeviceIdentityService, authService: AuthService) {
+async function render(
+  deviceIdentityService: DeviceIdentityService,
+  authService: AuthService,
+  sessionStore: SessionStore = makeSessionStore(),
+) {
   const onContinue = jest.fn();
   let latest: ReturnType<typeof useEntryController> | undefined;
 
@@ -45,6 +60,7 @@ async function render(deviceIdentityService: DeviceIdentityService, authService:
       <Harness
         deviceIdentityService={deviceIdentityService}
         authService={authService}
+        sessionStore={sessionStore}
         onContinue={onContinue}
         onReady={result => {
           latest = result;
@@ -55,7 +71,7 @@ async function render(deviceIdentityService: DeviceIdentityService, authService:
     await Promise.resolve();
   });
 
-  return { onContinue, get latest() { return latest; } };
+  return { onContinue, sessionStore, get latest() { return latest; } };
 }
 
 describe('useEntryController', () => {
@@ -68,23 +84,25 @@ describe('useEntryController', () => {
   });
 
   it('authenticated (device verified): shows a "Taking you in…" transition, then continues to chat-list', async () => {
-    const { onContinue, latest } = await render(
+    const token = {
+      access_token: 'a',
+      refresh_token: 'r',
+      access_token_expiry: 3600,
+      refresh_token_expiry: 2592000,
+    };
+    const { onContinue, sessionStore, latest } = await render(
       makeDeviceIdentityService('existing-device-id'),
       makeAuthService({
         status: 'authenticated',
         deviceId: 'existing-device-id',
-        token: {
-          access_token: 'a',
-          refresh_token: 'r',
-          access_token_expiry: 3600,
-          refresh_token_expiry: 2592000,
-        },
+        token,
       }),
     );
 
     expect(latest?.phase).toBe('ready');
     expect(latest?.isContinuing).toBe(true);
     expect(onContinue).not.toHaveBeenCalled();
+    expect(sessionStore.setToken).toHaveBeenCalledWith(token);
 
     act(() => {
       jest.advanceTimersByTime(500);
