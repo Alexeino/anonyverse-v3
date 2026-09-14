@@ -11,6 +11,7 @@ import { colors, fontFamily, spacing, typography } from '../../design/tokens';
 import { useCrossfade } from '../../hooks/useCrossfade';
 import { restAuthService } from '../../services/auth/restAuthService';
 import { secureDeviceIdentityService } from '../../services/deviceIdentity/secureDeviceIdentityService';
+import { inMemorySessionStore } from '../../services/session/inMemorySessionStore';
 import { MAX_VERIFY_ATTEMPTS, useVerificationController } from './useVerificationController';
 
 const miliChecking = require('../../assets/images/mili-checking.png');
@@ -34,7 +35,12 @@ const RETRY_CHECKLIST = [
 
 export function VerificationScreen({ onVerified }: VerificationScreenProps) {
   const { phase, isContinuing, attempts, turnstile, handleContinue, handleRetry } =
-    useVerificationController(secureDeviceIdentityService, restAuthService, onVerified);
+    useVerificationController(
+      secureDeviceIdentityService,
+      restAuthService,
+      inMemorySessionStore,
+      onVerified,
+    );
 
   const attemptsExhausted = attempts >= MAX_VERIFY_ATTEMPTS;
   const [reportSubmitted, setReportSubmitted] = useState(false);

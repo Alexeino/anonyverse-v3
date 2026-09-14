@@ -3,6 +3,7 @@ import ReactTestRenderer, { act } from 'react-test-renderer';
 import type { AuthService } from '../../../services/auth/AuthService';
 import type { VerifyOutcome } from '../../../services/auth/types';
 import type { DeviceIdentityService } from '../../../services/deviceIdentity/DeviceIdentityService';
+import type { SessionStore } from '../../../services/session/SessionStore';
 import { MAX_VERIFY_ATTEMPTS, useVerificationController } from '../useVerificationController';
 
 jest.mock('react-native-webview', () => {
@@ -55,24 +56,35 @@ function postTurnstileMessage(
   } as never);
 }
 
+function makeSessionStore(): SessionStore {
+  return {
+    getToken: jest.fn(() => null),
+    setToken: jest.fn(),
+    clear: jest.fn(),
+  };
+}
+
 function Harness({
   deviceIdentityService,
   authService,
+  sessionStore,
   onVerified,
   onReady,
 }: {
   deviceIdentityService: DeviceIdentityService;
   authService: AuthService;
+  sessionStore: SessionStore;
   onVerified: () => void;
   onReady: (result: ReturnType<typeof useVerificationController>) => void;
 }) {
-  const result = useVerificationController(deviceIdentityService, authService, onVerified);
+  const result = useVerificationController(deviceIdentityService, authService, sessionStore, onVerified);
   onReady(result);
   return null;
 }
 
 interface RenderedController {
   onVerified: jest.Mock;
+  sessionStore: SessionStore;
   /** Property access (not destructuring!) re-reads the latest hook result on every access. */
   readonly latest: ReturnType<typeof useVerificationController>;
 }
@@ -80,6 +92,7 @@ interface RenderedController {
 async function render(
   deviceIdentityService: DeviceIdentityService,
   authService: AuthService,
+  sessionStore: SessionStore = makeSessionStore(),
 ): Promise<RenderedController> {
   const onVerified = jest.fn();
   let latest: ReturnType<typeof useVerificationController> | undefined;
@@ -89,6 +102,7 @@ async function render(
       <Harness
         deviceIdentityService={deviceIdentityService}
         authService={authService}
+        sessionStore={sessionStore}
         onVerified={onVerified}
         onReady={result => {
           latest = result;
@@ -100,6 +114,7 @@ async function render(
 
   return {
     onVerified,
+    sessionStore,
     get latest() {
       return latest!;
     },
@@ -116,16 +131,17 @@ describe('useVerificationController', () => {
   });
 
   it('successful token + successful backend verify: flips to verified and auto-continues after the grace period', async () => {
+    const token = {
+      access_token: 'a',
+      refresh_token: 'r',
+      access_token_expiry: 3600,
+      refresh_token_expiry: 2592000,
+    };
     const authService = makeAuthService(() =>
       Promise.resolve({
         status: 'authenticated',
         deviceId: 'new-device-id',
-        token: {
-          access_token: 'a',
-          refresh_token: 'r',
-          access_token_expiry: 3600,
-          refresh_token_expiry: 2592000,
-        },
+        token,
       }),
     );
     const deviceIdentityService = makeDeviceIdentityService(null);
@@ -145,6 +161,7 @@ describe('useVerificationController', () => {
     expect(authService.verify).toHaveBeenCalledWith(null, 'challenge-token');
     expect(harness.latest.phase).toBe('verified');
     expect(deviceIdentityService.setDeviceId).toHaveBeenCalledWith('new-device-id');
+    expect(harness.sessionStore.setToken).toHaveBeenCalledWith(token);
     expect(harness.onVerified).not.toHaveBeenCalled();
 
     act(() => {

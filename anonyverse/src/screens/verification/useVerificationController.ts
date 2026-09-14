@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { env } from '../../config/env';
 import type { AuthService } from '../../services/auth/AuthService';
 import type { DeviceIdentityService } from '../../services/deviceIdentity/DeviceIdentityService';
+import type { SessionStore } from '../../services/session/SessionStore';
 import { useTurnstile, type UseTurnstileResult } from '../../services/turnstile/useTurnstile';
 
 export type VerificationPhase = 'verifying' | 'verified' | 'failed';
@@ -45,6 +46,7 @@ export interface UseVerificationControllerResult {
 export function useVerificationController(
   deviceIdentityService: DeviceIdentityService,
   authService: AuthService,
+  sessionStore: SessionStore,
   onVerified: () => void,
 ): UseVerificationControllerResult {
   const [phase, setPhase] = useState<VerificationPhase>('verifying');
@@ -96,6 +98,7 @@ export function useVerificationController(
         if (cancelled) {
           return;
         }
+        sessionStore.setToken(outcome.token);
         if (__DEV__) {
           console.log(`[Verification] Device "${outcome.deviceId}" verified successfully.`);
         }
@@ -110,7 +113,7 @@ export function useVerificationController(
     return () => {
       cancelled = true;
     };
-  }, [token, authService, deviceIdentityService, recordFailure]);
+  }, [token, authService, deviceIdentityService, sessionStore, recordFailure]);
 
   useEffect(() => {
     if (!turnstileError) {

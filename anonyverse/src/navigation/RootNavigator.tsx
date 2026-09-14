@@ -10,15 +10,11 @@ import { useCrossfade } from '../hooks/useCrossfade';
 import { ChatListScreen } from '../screens/chatList/ChatListScreen';
 import { EntryScreen } from '../screens/entry/EntryScreen';
 import type { EntryDestination } from '../screens/entry/useEntryController';
+import { FindingMatchScreen } from '../screens/findingMatch/FindingMatchScreen';
 import { MoodSelectScreen, type Mood } from '../screens/moodSelect/MoodSelectScreen';
 import { TopicsScreen, type TopicsSelection } from '../screens/topics/TopicsScreen';
 import { VerificationScreen } from '../screens/verification/VerificationScreen';
 import type { RootStackParamList } from './types';
-
-function logFindSomeone(selection: TopicsSelection) {
-  // Finding a Connection doesn't exist yet — see docs/flow.md.
-  console.log('[Topics] "Find someone" tapped — Finding a Connection not implemented yet.', selection);
-}
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -39,11 +35,12 @@ function EntryRoute() {
   return <EntryScreen onContinue={handleEntryContinue} />;
 }
 
-type OnboardingStep = 'verification' | 'mood_select' | 'topics';
+type OnboardingStep = 'verification' | 'mood_select' | 'topics' | 'finding_match';
 
 function VerificationRoute() {
   const [step, setStep] = useState<OnboardingStep>('verification');
   const [mood, setMood] = useState<Mood | null>(null);
+  const [selection, setSelection] = useState<TopicsSelection | null>(null);
 
   const handleVerified = useCallback(() => {
     setStep('mood_select');
@@ -56,8 +53,17 @@ function VerificationRoute() {
     setStep('topics');
   }, []);
 
-  // First-time flow: Mood Select and Topics render in place of
-  // Verification's own content instead of through real navigation, so
+  const handleFindSomeone = useCallback((topicsSelection: TopicsSelection) => {
+    setSelection(topicsSelection);
+    setStep('finding_match');
+  }, []);
+
+  const handleCancelSearch = useCallback(() => {
+    setStep('topics');
+  }, []);
+
+  // First-time flow: Mood Select, Topics, and Finding Match render in place
+  // of Verification's own content instead of through real navigation, so
   // every step shares one continuous, cross-fading surface rather than a
   // hard screen-stack cut — a route transition (even a fade) still fully
   // unmounts/remounts both screens, which reads as a jarring mismatch next
@@ -68,8 +74,10 @@ function VerificationRoute() {
 
   return (
     <Animated.View style={[styles.crossfade, { opacity }]}>
-      {displayStep === 'topics' && mood ? (
-        <TopicsScreen mood={mood} onFindSomeone={logFindSomeone} />
+      {displayStep === 'finding_match' && selection ? (
+        <FindingMatchScreen selection={selection} onClose={handleCancelSearch} />
+      ) : displayStep === 'topics' && mood ? (
+        <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} />
       ) : displayStep === 'mood_select' ? (
         <MoodSelectScreen showProgress onSelectMood={handleSelectMood} />
       ) : (
@@ -96,8 +104,12 @@ function ChatListRoute() {
   return <ChatListScreen onStartChat={handleStartChat} onOpenSettings={handleOpenSettings} />;
 }
 
+type ReturningStep = 'mood_select' | 'topics' | 'finding_match';
+
 function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, 'MoodSelect'>) {
+  const [step, setStep] = useState<ReturningStep>('mood_select');
   const [mood, setMood] = useState<Mood | null>(null);
+  const [selection, setSelection] = useState<TopicsSelection | null>(null);
 
   const handleSelectMood = useCallback((selectedMood: Mood) => {
     // Guard against a double-tap firing again while the crossfade to
@@ -105,17 +117,30 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
     // since useCrossfade's displayValue lag means the swap to TopicsScreen
     // isn't atomic with this state update.
     setMood(current => current ?? selectedMood);
+    setStep('topics');
+  }, []);
+
+  const handleFindSomeone = useCallback((topicsSelection: TopicsSelection) => {
+    setSelection(topicsSelection);
+    setStep('finding_match');
+  }, []);
+
+  const handleCancelSearch = useCallback(() => {
+    setStep('topics');
   }, []);
 
   // Same in-place cross-fade approach as VerificationRoute, for the same
-  // reason: Mood Select -> Topics is one continuous step of the returning
-  // user's flow, not a real navigable screen boundary in its own right.
-  const { displayValue: showTopics, opacity } = useCrossfade(mood !== null);
+  // reason: Mood Select -> Topics -> Finding Match is one continuous step
+  // of the returning user's flow, not a real navigable screen boundary in
+  // its own right.
+  const { displayValue: displayStep, opacity } = useCrossfade(step);
 
   return (
     <Animated.View style={[styles.crossfade, { opacity }]}>
-      {showTopics && mood ? (
-        <TopicsScreen mood={mood} onFindSomeone={logFindSomeone} />
+      {displayStep === 'finding_match' && selection ? (
+        <FindingMatchScreen selection={selection} onClose={handleCancelSearch} />
+      ) : displayStep === 'topics' && mood ? (
+        <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} />
       ) : (
         <MoodSelectScreen showProgress={route.params.showProgress} onSelectMood={handleSelectMood} />
       )}
