@@ -3,7 +3,7 @@ import ReactTestRenderer, { act } from 'react-test-renderer';
 import type { AuthService } from '../../../services/auth/AuthService';
 import type { VerifyOutcome } from '../../../services/auth/types';
 import type { DeviceIdentityService } from '../../../services/deviceIdentity/DeviceIdentityService';
-import { useVerificationController } from '../useVerificationController';
+import { MAX_VERIFY_ATTEMPTS, useVerificationController } from '../useVerificationController';
 
 jest.mock('react-native-webview', () => {
   const ReactActual = require('react');
@@ -180,7 +180,7 @@ describe('useVerificationController', () => {
     expect(harness.onVerified).not.toHaveBeenCalled();
   });
 
-  it('failed backend verify: resets the token so the widget can retry, and does not continue', async () => {
+  it('failed backend verify: phase becomes failed and records one attempt, without auto-resetting Turnstile', async () => {
     const authService = makeAuthService(() => Promise.resolve({ status: 'failed' }));
     const harness = await render(makeDeviceIdentityService(null), authService);
 
@@ -195,10 +195,89 @@ describe('useVerificationController', () => {
     });
 
     expect(authService.verify).toHaveBeenCalledTimes(1);
-    expect(harness.latest.phase).toBe('verifying');
+    expect(harness.latest.phase).toBe('failed');
+    expect(harness.latest.attempts).toBe(1);
     expect(harness.latest.isContinuing).toBe(false);
-    expect(harness.latest.turnstile.token).toBeNull();
+    expect(harness.latest.turnstile.token).toBe('challenge-token');
     expect(harness.onVerified).not.toHaveBeenCalled();
+  });
+
+  it('handleRetry resets Turnstile and returns to verifying, keeping the attempt count', async () => {
+    const authService = makeAuthService(() => Promise.resolve({ status: 'failed' }));
+    const harness = await render(makeDeviceIdentityService(null), authService);
+
+    const nonce = extractNonce(harness.latest.turnstile.html);
+    await act(async () => {
+      postTurnstileMessage(harness.latest.turnstile.handleMessage, nonce, {
+        type: 'turnstile_success',
+        token: 'challenge-token',
+      });
+      await flushMicrotasks();
+    });
+    expect(harness.latest.phase).toBe('failed');
+
+    act(() => {
+      harness.latest.handleRetry();
+    });
+
+    expect(harness.latest.phase).toBe('verifying');
+    expect(harness.latest.turnstile.token).toBeNull();
+    expect(harness.latest.attempts).toBe(1);
+  });
+
+  it('failed attempts cap out at MAX_VERIFY_ATTEMPTS', async () => {
+    const authService = makeAuthService(() => Promise.resolve({ status: 'failed' }));
+    const harness = await render(makeDeviceIdentityService(null), authService);
+    const nonce = extractNonce(harness.latest.turnstile.html);
+
+    for (let i = 0; i < MAX_VERIFY_ATTEMPTS; i += 1) {
+      await act(async () => {
+        postTurnstileMessage(harness.latest.turnstile.handleMessage, nonce, {
+          type: 'turnstile_success',
+          token: `challenge-token-${i}`,
+        });
+        await flushMicrotasks();
+      });
+      expect(harness.latest.phase).toBe('failed');
+      expect(harness.latest.attempts).toBe(i + 1);
+
+      if (i < MAX_VERIFY_ATTEMPTS - 1) {
+        act(() => {
+          harness.latest.handleRetry();
+        });
+      }
+    }
+
+    expect(harness.latest.attempts).toBe(MAX_VERIFY_ATTEMPTS);
+  });
+
+  it('a turnstile_error message counts as a failed attempt, without calling authService.verify', async () => {
+    const authService = makeAuthService(() =>
+      Promise.resolve({
+        status: 'authenticated',
+        deviceId: 'new-device-id',
+        token: {
+          access_token: 'a',
+          refresh_token: 'r',
+          access_token_expiry: 3600,
+          refresh_token_expiry: 2592000,
+        },
+      }),
+    );
+    const harness = await render(makeDeviceIdentityService(null), authService);
+    const nonce = extractNonce(harness.latest.turnstile.html);
+
+    await act(async () => {
+      postTurnstileMessage(harness.latest.turnstile.handleMessage, nonce, {
+        type: 'turnstile_error',
+        error: 'network_error',
+      });
+      await flushMicrotasks();
+    });
+
+    expect(authService.verify).not.toHaveBeenCalled();
+    expect(harness.latest.phase).toBe('failed');
+    expect(harness.latest.attempts).toBe(1);
   });
 
   it('handleContinue only fires onVerified once even if called twice', async () => {

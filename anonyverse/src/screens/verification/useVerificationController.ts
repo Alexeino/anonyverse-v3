@@ -4,7 +4,7 @@ import type { AuthService } from '../../services/auth/AuthService';
 import type { DeviceIdentityService } from '../../services/deviceIdentity/DeviceIdentityService';
 import { useTurnstile, type UseTurnstileResult } from '../../services/turnstile/useTurnstile';
 
-export type VerificationPhase = 'verifying' | 'verified';
+export type VerificationPhase = 'verifying' | 'verified' | 'failed';
 
 /** How long the "Verified" success state is shown before auto-continuing, if the user hasn't already tapped Continue. */
 const AUTO_CONTINUE_DELAY_MS = 1500;
@@ -12,13 +12,20 @@ const AUTO_CONTINUE_DELAY_MS = 1500;
 /** How long the Continue button shows its "moving to the next stage" transition before onVerified actually fires. */
 const CONTINUE_TRANSITION_MS = 500;
 
+/** How many failed attempts (bot-rejected, network error, or any other failure) are allowed before the screen stops offering a retry. */
+export const MAX_VERIFY_ATTEMPTS = 2;
+
 export interface UseVerificationControllerResult {
   phase: VerificationPhase;
   /** True only during the transient hand-off to onVerified (tap or auto-continue) — not a business state. */
   isContinuing: boolean;
+  /** Number of failed attempts so far — meaningful while phase is 'failed'. */
+  attempts: number;
   turnstile: UseTurnstileResult;
   /** Tap handler for the "Continue" CTA on the verified state. */
   handleContinue: () => void;
+  /** Tap handler for the "Try again" CTA on the failed (not yet exhausted) state. */
+  handleRetry: () => void;
 }
 
 /**
@@ -27,12 +34,13 @@ export interface UseVerificationControllerResult {
  * resulting token to POST /api/v1/captcha/verify, and — once the backend
  * confirms AUTHENTICATED — shows the verified state and hands off via
  * `onVerified`, either because the user tapped Continue or after a 1.5s
- * grace period, whichever happens first (matching the previous app's
- * behavior, ported here per the task description).
+ * grace period, whichever happens first.
  *
- * The Mood Check screen this hands off to doesn't exist yet, so
- * `onVerified` is just a callback — see VerificationRoute in
- * RootNavigator.tsx for where that becomes a console.log for now.
+ * A rejected token, a failed /verify request, and a Turnstile-side error
+ * are all treated the same way — a failed attempt — since none of them
+ * are distinguishable in a way that changes what the user should do next.
+ * After MAX_VERIFY_ATTEMPTS failures the screen stops offering a retry
+ * (see VerificationScreen for the exhausted-state UI).
  */
 export function useVerificationController(
   deviceIdentityService: DeviceIdentityService,
@@ -41,11 +49,12 @@ export function useVerificationController(
 ): UseVerificationControllerResult {
   const [phase, setPhase] = useState<VerificationPhase>('verifying');
   const [isContinuing, setIsContinuing] = useState(false);
+  const [attempts, setAttempts] = useState(0);
   const verifyingRef = useRef(false);
   const continuedRef = useRef(false);
 
   const turnstile = useTurnstile(env.turnstileSiteKey, 'light');
-  const { token, reset } = turnstile;
+  const { token, error: turnstileError, reset } = turnstile;
 
   const fireOnVerifiedOnce = useCallback(() => {
     if (continuedRef.current) {
@@ -53,6 +62,11 @@ export function useVerificationController(
     }
     continuedRef.current = true;
     setIsContinuing(true);
+  }, []);
+
+  const recordFailure = useCallback(() => {
+    setAttempts(current => current + 1);
+    setPhase('failed');
   }, []);
 
   useEffect(() => {
@@ -89,17 +103,24 @@ export function useVerificationController(
         return;
       }
 
-      console.error(
-        '[Verification] Backend rejected the Turnstile token — resetting to retry.',
-        outcome.error,
-      );
-      reset();
+      console.error('[Verification] Backend rejected the Turnstile token.', outcome.error);
+      recordFailure();
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [token, authService, deviceIdentityService, reset]);
+  }, [token, authService, deviceIdentityService, recordFailure]);
+
+  useEffect(() => {
+    if (!turnstileError) {
+      return;
+    }
+    if (__DEV__) {
+      console.error('[Verification] Turnstile widget reported an error.', turnstileError);
+    }
+    recordFailure();
+  }, [turnstileError, recordFailure]);
 
   useEffect(() => {
     if (phase !== 'verified') {
@@ -119,5 +140,21 @@ export function useVerificationController(
     return () => clearTimeout(timer);
   }, [isContinuing, onVerified]);
 
-  return { phase, isContinuing, turnstile, handleContinue: fireOnVerifiedOnce };
+  const handleRetry = useCallback(() => {
+    if (attempts >= MAX_VERIFY_ATTEMPTS) {
+      return;
+    }
+    verifyingRef.current = false;
+    reset();
+    setPhase('verifying');
+  }, [attempts, reset]);
+
+  return {
+    phase,
+    isContinuing,
+    attempts,
+    turnstile,
+    handleContinue: fireOnVerifiedOnce,
+    handleRetry,
+  };
 }

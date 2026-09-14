@@ -37,6 +37,8 @@ export const colors = {
   moodGoodChipSelected: '#FDEBF7',
   moodLowChipSelected: '#EDF3FE',
   warning: '#C24444',
+  danger: '#A32B4E',
+  dangerBadgeBackground: '#FBEDF1',
 } as const;
 
 export const fontFamily = {
