@@ -175,7 +175,8 @@ export function TopicsScreen({ mood, onFindSomeone }: TopicsScreenProps) {
       setShowTooltip(true);
       return;
     }
-    onFindSomeone({ mood, tags: selectedIds, optedIn: content.hasOptInToggle ? optedIn : false });
+    const selectedOptIn = content.hasOptInToggle ? optedIn : false;
+    onFindSomeone({ mood, tags: selectedIds, optedIn: selectedOptIn });
   };
 
   const rows: Topic[][] = [];

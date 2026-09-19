@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { AuthService } from '../../services/auth/AuthService';
 import type { DeviceIdentityService } from '../../services/deviceIdentity/DeviceIdentityService';
 import type { SessionStore } from '../../services/session/SessionStore';
+import { posthog } from '../../config/posthog';
 
 /**
  * Where the Entry screen hands off to once its job is done. These are not
@@ -47,6 +48,7 @@ export function useEntryController(
     let cancelled = false;
 
     async function bootstrap() {
+      posthog?.capture("test_event")
       const deviceId = await deviceIdentityService.getDeviceId();
 
       if (cancelled) {
@@ -72,6 +74,11 @@ export function useEntryController(
           if (outcome.deviceId !== deviceId) {
             await deviceIdentityService.setDeviceId(outcome.deviceId);
           }
+
+          if (cancelled) {
+            return;
+          }
+
           sessionStore.setToken(outcome.token);
           if (__DEV__) {
             console.log(

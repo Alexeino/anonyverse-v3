@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { Animated, StyleSheet } from 'react-native';
 import { NavigationContainer, useNavigation } from '@react-navigation/native';
 import type {
@@ -6,6 +6,7 @@ import type {
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { PostHogProvider } from 'posthog-react-native';
 import { useCrossfade } from '../hooks/useCrossfade';
 import { ChatListScreen } from '../screens/chatList/ChatListScreen';
 import { EntryScreen } from '../screens/entry/EntryScreen';
@@ -14,6 +15,7 @@ import { FindingMatchScreen } from '../screens/findingMatch/FindingMatchScreen';
 import { MoodSelectScreen, type Mood } from '../screens/moodSelect/MoodSelectScreen';
 import { TopicsScreen, type TopicsSelection } from '../screens/topics/TopicsScreen';
 import { VerificationScreen } from '../screens/verification/VerificationScreen';
+import { posthog } from '../config/posthog';
 import type { RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -41,15 +43,18 @@ function VerificationRoute() {
   const [step, setStep] = useState<OnboardingStep>('verification');
   const [mood, setMood] = useState<Mood | null>(null);
   const [selection, setSelection] = useState<TopicsSelection | null>(null);
+  const moodSelectedRef = useRef(false);
 
   const handleVerified = useCallback(() => {
     setStep('mood_select');
   }, []);
 
   const handleSelectMood = useCallback((selectedMood: Mood) => {
-    // Guard against a double-tap firing again while the crossfade to
-    // Topics is still in flight — the mood is locked in on the first tap.
-    setMood(current => current ?? selectedMood);
+    if (moodSelectedRef.current) {
+      return;
+    }
+    moodSelectedRef.current = true;
+    setMood(selectedMood);
     setStep('topics');
   }, []);
 
@@ -110,13 +115,14 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
   const [step, setStep] = useState<ReturningStep>('mood_select');
   const [mood, setMood] = useState<Mood | null>(null);
   const [selection, setSelection] = useState<TopicsSelection | null>(null);
+  const moodSelectedRef = useRef(false);
 
   const handleSelectMood = useCallback((selectedMood: Mood) => {
-    // Guard against a double-tap firing again while the crossfade to
-    // Topics is still in flight — the mood is locked in on the first tap,
-    // since useCrossfade's displayValue lag means the swap to TopicsScreen
-    // isn't atomic with this state update.
-    setMood(current => current ?? selectedMood);
+    if (moodSelectedRef.current) {
+      return;
+    }
+    moodSelectedRef.current = true;
+    setMood(selectedMood);
     setStep('topics');
   }, []);
 
@@ -149,42 +155,57 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
 }
 
 export function RootNavigator() {
-  return (
-    <NavigationContainer>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Entry" component={EntryRoute} />
-        {/*
-          animationTypeForReplace defaults to 'pop' — the incoming screen
-          would animate in as if going *backward*, which reads as broken
-          when it's actually the next step in a forward flow (Entry ->
-          Verification/ChatList both use navigation.replace()). Every
-          screen reached that way needs 'push' explicitly so replace looks
-          like forward progress.
-        */}
-        <Stack.Screen
-          name="Verification"
-          component={VerificationRoute}
-          options={{ animationTypeForReplace: 'push' }}
-        />
-        <Stack.Screen
-          name="ChatList"
-          component={ChatListRoute}
-          options={{ animationTypeForReplace: 'push' }}
-        />
-        {/*
-          Only reached via navigate() now, from ChatList's "Start a chat"
-          (the returning-user path) — the first-time path renders
-          MoodSelectScreen inside VerificationRoute directly, see there.
-          Fade instead of the default slide for a softer push.
-        */}
-        <Stack.Screen
-          name="MoodSelect"
-          component={MoodSelectRoute}
-          options={{ animation: 'fade' }}
-        />
-      </Stack.Navigator>
-    </NavigationContainer>
+  const navigator = (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="Entry" component={EntryRoute} />
+      {/*
+        animationTypeForReplace defaults to 'pop' — the incoming screen
+        would animate in as if going *backward*, which reads as broken
+        when it's actually the next step in a forward flow (Entry ->
+        Verification/ChatList both use navigation.replace()). Every
+        screen reached that way needs 'push' explicitly so replace looks
+        like forward progress.
+      */}
+      <Stack.Screen
+        name="Verification"
+        component={VerificationRoute}
+        options={{ animationTypeForReplace: 'push' }}
+      />
+      <Stack.Screen
+        name="ChatList"
+        component={ChatListRoute}
+        options={{ animationTypeForReplace: 'push' }}
+      />
+      {/*
+        Only reached via navigate() now, from ChatList's "Start a chat"
+        (the returning-user path) — the first-time path renders
+        MoodSelectScreen inside VerificationRoute directly, see there.
+        Fade instead of the default slide for a softer push.
+      */}
+      <Stack.Screen
+        name="MoodSelect"
+        component={MoodSelectRoute}
+        options={{ animation: 'fade' }}
+      />
+    </Stack.Navigator>
   );
+
+  // posthog is resolved once at module load (see config/posthog.ts), so
+  // whether this tree is wrapped in PostHogProvider never changes across
+  // the app's lifetime — it's not a conditional root that would trigger a
+  // remount at runtime.
+  const content = posthog ? (
+    <PostHogProvider
+      client={posthog}
+      autocapture={{ captureScreens: false, captureTouches: false }}
+    >
+      {navigator}
+    </PostHogProvider>
+  ) : (
+    navigator
+  );
+
+  return <NavigationContainer>{content}</NavigationContainer>;
 }
 
 const styles = StyleSheet.create({
