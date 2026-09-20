@@ -63,6 +63,8 @@ export function createSocketIoChatSocketService(): ChatSocketService {
   let socket: Socket | null = null;
   const matchFoundHandlers = new Set<(event: MatchFoundEvent) => void>();
   const receiveMessageHandlers = new Set<(event: ReceiveMessageEvent) => void>();
+  const partnerTypingHandlers = new Set<() => void>();
+  const partnerTypingStopHandlers = new Set<() => void>();
 
   function handleMatchFound(event: MatchFoundEvent) {
     matchFoundHandlers.forEach(handler => handler(event));
@@ -70,6 +72,14 @@ export function createSocketIoChatSocketService(): ChatSocketService {
 
   function handleReceiveMessage(event: ReceiveMessageEvent) {
     receiveMessageHandlers.forEach(handler => handler(event));
+  }
+
+  function handlePartnerTyping() {
+    partnerTypingHandlers.forEach(handler => handler());
+  }
+
+  function handlePartnerTypingStop() {
+    partnerTypingStopHandlers.forEach(handler => handler());
   }
 
   return {
@@ -99,6 +109,8 @@ export function createSocketIoChatSocketService(): ChatSocketService {
         socket = nextSocket;
         nextSocket.on('match_found', handleMatchFound);
         nextSocket.on('receive_message', handleReceiveMessage);
+        nextSocket.on('partner_typing', handlePartnerTyping);
+        nextSocket.on('partner_typing_stop', handlePartnerTypingStop);
 
         let settled = false;
         function settle(run: () => void) {
@@ -164,12 +176,42 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       };
     },
 
+    sendTyping() {
+      if (!socket) {
+        return;
+      }
+      socket.emit('typing');
+    },
+
+    sendTypingStop() {
+      if (!socket) {
+        return;
+      }
+      socket.emit('typing_stop');
+    },
+
+    onPartnerTyping(handler) {
+      partnerTypingHandlers.add(handler);
+      return () => {
+        partnerTypingHandlers.delete(handler);
+      };
+    },
+
+    onPartnerTypingStop(handler) {
+      partnerTypingStopHandlers.add(handler);
+      return () => {
+        partnerTypingStopHandlers.delete(handler);
+      };
+    },
+
     disconnect() {
       if (!socket) {
         return;
       }
       socket.off('match_found', handleMatchFound);
       socket.off('receive_message', handleReceiveMessage);
+      socket.off('partner_typing', handlePartnerTyping);
+      socket.off('partner_typing_stop', handlePartnerTypingStop);
       socket.disconnect();
       socket = null;
     },

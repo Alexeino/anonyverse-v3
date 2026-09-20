@@ -14,5 +14,13 @@ export interface ChatSocketService {
 
   onReceiveMessage(handler: (event: ReceiveMessageEvent) => void): () => void;
 
+  sendTyping(): void;
+
+  sendTypingStop(): void;
+
+  onPartnerTyping(handler: () => void): () => void;
+
+  onPartnerTypingStop(handler: () => void): () => void;
+
   disconnect(): void;
 }
