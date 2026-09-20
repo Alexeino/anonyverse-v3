@@ -15,6 +15,9 @@ export interface UseFindingMatchControllerResult {
   handleClose: () => void;
 }
 
+/** How long the "Match found!" state is shown before handing off to the Chat screen. */
+const MATCH_HANDOFF_DELAY_MS = 1200;
+
 /**
  * Owns the Finding Match screen's state machine: connects to the
  * matchmaking socket (docs/api.md §3) using the session's stored access
@@ -22,6 +25,11 @@ export interface UseFindingMatchControllerResult {
  * match_found — the only signal treated as authoritative here, since the
  * server also acks join_chat directly with {ok, status}, but that ack is
  * informational only (see ChatSocketService).
+ *
+ * On match_found, shows the 'matched' state briefly and then calls
+ * `onMatched` with the still-connected ChatSocketService and the partner
+ * id, so the caller can hand the live socket straight to the Chat screen
+ * instead of this hook disconnecting it — see the handedOffRef guard below.
  *
  * There's no dedicated "leave queue" event (docs/api.md, Not Yet
  * Implemented) — disconnecting the socket, via handleClose or unmount, is
@@ -32,9 +40,11 @@ export function useFindingMatchController(
   sessionStore: SessionStore,
   // TODO: document/enforce that this must be a stable reference (module-level,
   // useCallback, or useMemo) — an inline factory would re-run the connect →
-  // join_chat effect on every render. See useEffect dep array below.
+  // join_chat effect on every render. See useEffect dep array below. The
+  // same applies to onMatched.
   createChatSocketService: () => ChatSocketService,
   onClose: () => void,
+  onMatched: (service: ChatSocketService, partner: string) => void,
 ): UseFindingMatchControllerResult {
   const [phase, setPhase] = useState<FindingMatchPhase>('connecting');
   const [error, setError] = useState<{ reason: ChatSocketConnectErrorReason } | null>(null);
@@ -48,6 +58,10 @@ export function useFindingMatchController(
   // ever changed.
   const captureEndRef = useRef(captureEnd);
   captureEndRef.current = captureEnd;
+  // Set just before onMatched fires, so the effect's cleanup (which runs on
+  // unmount once the caller swaps this screen out for Chat) knows not to
+  // disconnect a socket it just handed off live.
+  const handedOffRef = useRef(false);
 
   // Mount-once, independent of the connect/join_chat effect below (whose
   // deps aren't a strict mount-once guarantee) — mirrors the
@@ -78,10 +92,17 @@ export function useFindingMatchController(
         return;
       }
       if (__DEV__) {
-        console.log('[FindingMatch] Match found — navigating to chat screen.', event.partner);
+        console.log('[FindingMatch] Match found — handing off to chat screen.', event.partner);
       }
       captureEndRef.current('match_found', 'wait_duration_ms', { topics: selection.tags });
       setPhase('matched');
+      setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        handedOffRef.current = true;
+        onMatched(service, event.partner);
+      }, MATCH_HANDOFF_DELAY_MS);
     });
 
     (async () => {
@@ -120,9 +141,11 @@ export function useFindingMatchController(
     return () => {
       cancelled = true;
       unsubscribeMatchFound();
-      service.disconnect();
+      if (!handedOffRef.current) {
+        service.disconnect();
+      }
     };
-  }, [selection, sessionStore, createChatSocketService]);
+  }, [selection, sessionStore, createChatSocketService, onMatched]);
 
   const handleClose = useCallback(() => {
     serviceRef.current?.disconnect();

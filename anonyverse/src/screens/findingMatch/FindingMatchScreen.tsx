@@ -7,6 +7,7 @@ import { MascotPair } from '../../components/MascotPair/MascotPair';
 import { StatusCard } from '../../components/StatusCard/StatusCard';
 import { colors, fontFamily, spacing, typography } from '../../design/tokens';
 import { rgbaAlpha } from '../../design/svgColor';
+import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
 import { createSocketIoChatSocketService } from '../../services/chatSocket/socketIoChatSocketService';
 import { inMemorySessionStore } from '../../services/session/inMemorySessionStore';
 import type { TopicsSelection } from '../topics/TopicsScreen';
@@ -23,25 +24,18 @@ const GLOW_COLOR_TRANSPARENT = 'rgba(242,165,224,0)';
 
 export interface FindingMatchScreenProps {
   selection: TopicsSelection;
-  /** Called when the user cancels the search (close button) — the caller decides where "back" goes. */
   onClose: () => void;
+  onMatched: (service: ChatSocketService, partner: string) => void;
 }
 
-/**
- * "Finding a Connection" screen — matches the Anonyverse Figma frame
- * "Finding Match" (node 10:937). Connects to the matchmaking socket (see
- * useFindingMatchController) as soon as it mounts and stays on this single
- * visual state whether the server says "queued" or "matched" via join_chat's
- * ack — only the match_found event (phase 'matched') changes what's shown.
- * There's no chat screen to hand off to yet, so 'matched' just swaps the
- * bottom card to a confirmation; wiring an actual navigation is future work.
- */
-export function FindingMatchScreen({ selection, onClose }: FindingMatchScreenProps) {
+
+export function FindingMatchScreen({ selection, onClose, onMatched }: FindingMatchScreenProps) {
   const { phase, error, handleClose } = useFindingMatchController(
     selection,
     inMemorySessionStore,
     createSocketIoChatSocketService,
     onClose,
+    onMatched,
   );
 
   return (

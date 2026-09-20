@@ -40,6 +40,7 @@ function makeChatSocketService({
   const disconnect = jest.fn();
   const connect = jest.fn(connectImpl);
   const joinChat = jest.fn(joinChatImpl);
+  const sendMessage = jest.fn();
 
   const service: ChatSocketService = {
     connect,
@@ -48,6 +49,8 @@ function makeChatSocketService({
       matchFoundHandlers.add(handler);
       return () => matchFoundHandlers.delete(handler);
     },
+    sendMessage,
+    onReceiveMessage: () => () => {},
     disconnect,
   };
 
@@ -56,6 +59,7 @@ function makeChatSocketService({
     connect,
     joinChat,
     disconnect,
+    sendMessage,
     emitMatchFound: (event: MatchFoundEvent) => matchFoundHandlers.forEach(handler => handler(event)),
   };
 }
@@ -64,20 +68,24 @@ function Harness({
   sessionStore,
   createChatSocketService,
   onClose,
+  onMatched,
   onReady,
 }: {
   sessionStore: SessionStore;
   createChatSocketService: () => ChatSocketService;
   onClose: () => void;
+  onMatched: (service: ChatSocketService, partner: string) => void;
   onReady: (result: ReturnType<typeof useFindingMatchController>) => void;
 }) {
-  const result = useFindingMatchController(SELECTION, sessionStore, createChatSocketService, onClose);
+  const result = useFindingMatchController(SELECTION, sessionStore, createChatSocketService, onClose, onMatched);
   onReady(result);
   return null;
 }
 
 interface RenderedController {
   onClose: jest.Mock;
+  onMatched: jest.Mock;
+  renderer: ReactTestRenderer.ReactTestRenderer;
   readonly latest: ReturnType<typeof useFindingMatchController>;
 }
 
@@ -86,14 +94,17 @@ async function render(
   createChatSocketService: () => ChatSocketService,
 ): Promise<RenderedController> {
   const onClose = jest.fn();
+  const onMatched = jest.fn();
   let latest: ReturnType<typeof useFindingMatchController> | undefined;
+  let renderer!: ReactTestRenderer.ReactTestRenderer;
 
   await act(async () => {
-    ReactTestRenderer.create(
+    renderer = ReactTestRenderer.create(
       <Harness
         sessionStore={sessionStore}
         createChatSocketService={createChatSocketService}
         onClose={onClose}
+        onMatched={onMatched}
         onReady={result => {
           latest = result;
         }}
@@ -104,6 +115,8 @@ async function render(
 
   return {
     onClose,
+    onMatched,
+    renderer,
     get latest() {
       return latest!;
     },
@@ -147,6 +160,44 @@ describe('useFindingMatchController', () => {
       'match_found',
       expect.objectContaining({ topics: ['life', 'work'], wait_duration_ms: expect.any(Number) }),
     );
+
+    // Unmount rather than leaving the pending handoff setTimeout dangling
+    // past the end of the test.
+    act(() => {
+      harness.renderer.unmount();
+    });
+  });
+
+  it('match_found: hands off the live socket via onMatched after the display delay, and unmount does not disconnect it', async () => {
+    jest.useFakeTimers();
+    try {
+      const fake = makeChatSocketService();
+      const harness = await render(makeSessionStore(TOKEN), () => fake.service);
+
+      act(() => {
+        fake.emitMatchFound({ partner: 'partner-id' });
+      });
+
+      expect(harness.onMatched).not.toHaveBeenCalled();
+
+      act(() => {
+        jest.runAllTimers();
+      });
+
+      expect(harness.onMatched).toHaveBeenCalledTimes(1);
+      expect(harness.onMatched).toHaveBeenCalledWith(fake.service, 'partner-id');
+      expect(fake.disconnect).not.toHaveBeenCalled();
+
+      act(() => {
+        harness.renderer.unmount();
+      });
+
+      // The handed-off socket now belongs to the Chat screen — unmounting
+      // Finding Match after handoff must not tear it down out from under it.
+      expect(fake.disconnect).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('connect_error: surfaces the mapped reason and does not attempt join_chat', async () => {
@@ -197,6 +248,7 @@ describe('useFindingMatchController', () => {
           sessionStore={sessionStore}
           createChatSocketService={() => fake.service}
           onClose={jest.fn()}
+          onMatched={jest.fn()}
           onReady={result => {
             latest = result;
           }}
