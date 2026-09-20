@@ -4,14 +4,17 @@
  */
 
 import { StatusBar } from 'react-native';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { RootNavigator } from './src/navigation/RootNavigator';
 
 function App() {
   return (
     <SafeAreaProvider>
-      <StatusBar barStyle="dark-content" />
-      <RootNavigator />
+      <KeyboardProvider>
+        <StatusBar barStyle="dark-content" />
+        <RootNavigator />
+      </KeyboardProvider>
     </SafeAreaProvider>
   );
 }

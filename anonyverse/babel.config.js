@@ -9,5 +9,8 @@ module.exports = {
         safe: true,
       },
     ],
+    // Must stay last — required by react-native-reanimated (via
+    // react-native-keyboard-controller's KeyboardStickyView).
+    'react-native-worklets/plugin',
   ],
 };

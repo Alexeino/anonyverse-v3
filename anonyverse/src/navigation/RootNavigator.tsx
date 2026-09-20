@@ -1,22 +1,33 @@
-import React, { useCallback, useState } from 'react';
-import { Animated, StyleSheet } from 'react-native';
-import { NavigationContainer, useNavigation } from '@react-navigation/native';
+import React, { useCallback, useRef, useState } from 'react';
+import { Animated, Pressable, StyleSheet, Text } from 'react-native';
+import { createNavigationContainerRef, NavigationContainer, useNavigation } from '@react-navigation/native';
 import type {
   NativeStackNavigationProp,
   NativeStackScreenProps,
 } from '@react-navigation/native-stack';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useCrossfade } from '../hooks/useCrossfade';
+import { ChatScreen } from '../screens/chat/ChatScreen';
 import { ChatListScreen } from '../screens/chatList/ChatListScreen';
+import { DevMenuScreen, type DevMenuEntry } from '../screens/devMenu/DevMenuScreen';
 import { EntryScreen } from '../screens/entry/EntryScreen';
 import type { EntryDestination } from '../screens/entry/useEntryController';
 import { FindingMatchScreen } from '../screens/findingMatch/FindingMatchScreen';
 import { MoodSelectScreen, type Mood } from '../screens/moodSelect/MoodSelectScreen';
 import { TopicsScreen, type TopicsSelection } from '../screens/topics/TopicsScreen';
 import { VerificationScreen } from '../screens/verification/VerificationScreen';
+import type { ChatSocketService } from '../services/chatSocket/ChatSocketService';
+import { createDevNoopChatSocketService } from '../services/chatSocket/devNoopChatSocketService';
 import type { RootStackParamList } from './types';
 
+interface ChatHandoff {
+  service: ChatSocketService;
+  partner: string;
+}
+
 const Stack = createNativeStackNavigator<RootStackParamList>();
+
+const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 function EntryRoute() {
   const navigation =
@@ -35,12 +46,15 @@ function EntryRoute() {
   return <EntryScreen onContinue={handleEntryContinue} />;
 }
 
-type OnboardingStep = 'verification' | 'mood_select' | 'topics' | 'finding_match';
+type OnboardingStep = 'verification' | 'mood_select' | 'topics' | 'finding_match' | 'chat';
 
 function VerificationRoute() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [step, setStep] = useState<OnboardingStep>('verification');
   const [mood, setMood] = useState<Mood | null>(null);
   const [selection, setSelection] = useState<TopicsSelection | null>(null);
+  const [chatHandoff, setChatHandoff] = useState<ChatHandoff | null>(null);
 
   const handleVerified = useCallback(() => {
     setStep('mood_select');
@@ -62,9 +76,19 @@ function VerificationRoute() {
     setStep('topics');
   }, []);
 
-  // First-time flow: Mood Select, Topics, and Finding Match render in place
-  // of Verification's own content instead of through real navigation, so
-  // every step shares one continuous, cross-fading surface rather than a
+  const handleMatched = useCallback((service: ChatSocketService, partner: string) => {
+    setChatHandoff({ service, partner });
+    setStep('chat');
+  }, []);
+
+  const handleLeaveChat = useCallback(() => {
+    setChatHandoff(null);
+    navigation.replace('ChatList');
+  }, [navigation]);
+
+  // First-time flow: Mood Select, Topics, Finding Match, and Chat render in
+  // place of Verification's own content instead of through real navigation,
+  // so every step shares one continuous, cross-fading surface rather than a
   // hard screen-stack cut — a route transition (even a fade) still fully
   // unmounts/remounts both screens, which reads as a jarring mismatch next
   // to Verification's own smooth in-place phase transitions. The
@@ -74,8 +98,15 @@ function VerificationRoute() {
 
   return (
     <Animated.View style={[styles.crossfade, { opacity }]}>
-      {displayStep === 'finding_match' && selection ? (
-        <FindingMatchScreen selection={selection} onClose={handleCancelSearch} />
+      {displayStep === 'chat' && chatHandoff && mood ? (
+        <ChatScreen
+          chatSocketService={chatHandoff.service}
+          mood={mood}
+          topic={selection?.tags[0] ?? null}
+          onLeave={handleLeaveChat}
+        />
+      ) : displayStep === 'finding_match' && selection ? (
+        <FindingMatchScreen selection={selection} onClose={handleCancelSearch} onMatched={handleMatched} />
       ) : displayStep === 'topics' && mood ? (
         <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} />
       ) : displayStep === 'mood_select' ? (
@@ -104,12 +135,15 @@ function ChatListRoute() {
   return <ChatListScreen onStartChat={handleStartChat} onOpenSettings={handleOpenSettings} />;
 }
 
-type ReturningStep = 'mood_select' | 'topics' | 'finding_match';
+type ReturningStep = 'mood_select' | 'topics' | 'finding_match' | 'chat';
 
 function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, 'MoodSelect'>) {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [step, setStep] = useState<ReturningStep>('mood_select');
   const [mood, setMood] = useState<Mood | null>(null);
   const [selection, setSelection] = useState<TopicsSelection | null>(null);
+  const [chatHandoff, setChatHandoff] = useState<ChatHandoff | null>(null);
 
   const handleSelectMood = useCallback((selectedMood: Mood) => {
     // Guard against a double-tap firing again while the crossfade to
@@ -129,16 +163,33 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
     setStep('topics');
   }, []);
 
+  const handleMatched = useCallback((service: ChatSocketService, partner: string) => {
+    setChatHandoff({ service, partner });
+    setStep('chat');
+  }, []);
+
+  const handleLeaveChat = useCallback(() => {
+    setChatHandoff(null);
+    navigation.replace('ChatList');
+  }, [navigation]);
+
   // Same in-place cross-fade approach as VerificationRoute, for the same
-  // reason: Mood Select -> Topics -> Finding Match is one continuous step
-  // of the returning user's flow, not a real navigable screen boundary in
-  // its own right.
+  // reason: Mood Select -> Topics -> Finding Match -> Chat is one
+  // continuous step of the returning user's flow, not a real navigable
+  // screen boundary in its own right.
   const { displayValue: displayStep, opacity } = useCrossfade(step);
 
   return (
     <Animated.View style={[styles.crossfade, { opacity }]}>
-      {displayStep === 'finding_match' && selection ? (
-        <FindingMatchScreen selection={selection} onClose={handleCancelSearch} />
+      {displayStep === 'chat' && chatHandoff && mood ? (
+        <ChatScreen
+          chatSocketService={chatHandoff.service}
+          mood={mood}
+          topic={selection?.tags[0] ?? null}
+          onLeave={handleLeaveChat}
+        />
+      ) : displayStep === 'finding_match' && selection ? (
+        <FindingMatchScreen selection={selection} onClose={handleCancelSearch} onMatched={handleMatched} />
       ) : displayStep === 'topics' && mood ? (
         <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} />
       ) : (
@@ -148,9 +199,120 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
   );
 }
 
+function DevTopicsRoute({ route }: NativeStackScreenProps<RootStackParamList, 'DevTopics'>) {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  return (
+    <TopicsScreen
+      mood={route.params.mood}
+      onFindSomeone={() => navigation.navigate('DevChat', undefined)}
+    />
+  );
+}
+
+function DevFindingMatchRoute() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const selectionRef = useRef<TopicsSelection>({ mood: 'good', tags: ['life'], optedIn: true });
+
+  return (
+    <FindingMatchScreen
+      selection={selectionRef.current}
+      onClose={() => navigation.goBack()}
+      onMatched={(service, partner) =>
+        navigation.navigate('DevChat', { service, partner, mood: selectionRef.current.mood, topic: selectionRef.current.tags[0] ?? null })
+      }
+    />
+  );
+}
+
+function DevChatRoute({ route }: NativeStackScreenProps<RootStackParamList, 'DevChat'>) {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const fallbackServiceRef = useRef<ChatSocketService | undefined>(undefined);
+  if (!fallbackServiceRef.current) {
+    fallbackServiceRef.current = createDevNoopChatSocketService();
+  }
+
+  const params = route.params;
+
+  return (
+    <ChatScreen
+      chatSocketService={params?.service ?? fallbackServiceRef.current}
+      mood={params?.mood ?? 'good'}
+      topic={params?.topic ?? 'hobbies'}
+      onLeave={() => navigation.navigate('DevMenu')}
+    />
+  );
+}
+
+function DevMenuRoute() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  const entries: DevMenuEntry[] = [
+    {
+      label: 'Entry',
+      description: 'First screen a fresh install sees.',
+      onPress: () => navigation.navigate('Entry'),
+    },
+    {
+      label: 'Verification',
+      description: 'Cloudflare Turnstile "prove you\'re human" screen.',
+      onPress: () => navigation.navigate('Verification'),
+    },
+    {
+      label: 'Mood Select',
+      description: 'Returning-user variant (no progress bar).',
+      onPress: () => navigation.navigate('MoodSelect', { showProgress: false }),
+    },
+    {
+      label: 'Topics — feeling good',
+      description: 'Topic picker, "good" mood variant.',
+      onPress: () => navigation.navigate('DevTopics', { mood: 'good' }),
+    },
+    {
+      label: 'Topics — feeling low',
+      description: 'Topic picker, "low" mood variant.',
+      onPress: () => navigation.navigate('DevTopics', { mood: 'low' }),
+    },
+    {
+      label: 'Finding Match',
+      description: "Connects for real — shows the MISSING_TOKEN error state unless you've verified this session.",
+      onPress: () => navigation.navigate('DevFindingMatch'),
+    },
+    {
+      label: 'Chat',
+      description: 'UI preview only — no real partner, sendMessage is a no-op.',
+      onPress: () => navigation.navigate('DevChat', undefined),
+    },
+    {
+      label: 'Chat List',
+      description: 'Returning-user home screen.',
+      onPress: () => navigation.navigate('ChatList'),
+    },
+  ];
+
+  return <DevMenuScreen entries={entries} onClose={() => navigation.goBack()} />;
+}
+
+function DevButton() {
+  return (
+    <Pressable
+      onPress={() => navigationRef.isReady() && navigationRef.navigate('DevMenu')}
+      accessibilityRole="button"
+      accessibilityLabel="Open dev menu"
+      style={devButtonStyles.button}
+    >
+      <Text style={devButtonStyles.label}>DEV</Text>
+    </Pressable>
+  );
+}
+
 export function RootNavigator() {
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Entry" component={EntryRoute} />
         {/*
@@ -182,7 +344,16 @@ export function RootNavigator() {
           component={MoodSelectRoute}
           options={{ animation: 'fade' }}
         />
+        {__DEV__ ? (
+          <>
+            <Stack.Screen name="DevMenu" component={DevMenuRoute} options={{ animation: 'fade' }} />
+            <Stack.Screen name="DevTopics" component={DevTopicsRoute} />
+            <Stack.Screen name="DevFindingMatch" component={DevFindingMatchRoute} />
+            <Stack.Screen name="DevChat" component={DevChatRoute} />
+          </>
+        ) : null}
       </Stack.Navigator>
+      {__DEV__ ? <DevButton /> : null}
     </NavigationContainer>
   );
 }
@@ -190,5 +361,30 @@ export function RootNavigator() {
 const styles = StyleSheet.create({
   crossfade: {
     flex: 1,
+  },
+});
+
+const devButtonStyles = StyleSheet.create({
+  button: {
+    position: 'absolute',
+    right: 16,
+    bottom: 120,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1A1023',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  label: {
+    fontFamily: 'Nunito-Bold',
+    fontSize: 10,
+    letterSpacing: 0.5,
+    color: '#FFFFFF',
   },
 });

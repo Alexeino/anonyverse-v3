@@ -1,4 +1,4 @@
-import React, { useId } from 'react';
+import React, { useId, useState } from 'react';
 import { Image, ImageSourcePropType, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Defs, LinearGradient, Rect, Stop } from 'react-native-svg';
@@ -11,6 +11,10 @@ const miliHappy = require('../../assets/images/mili-happy.png');
 const miloSad = require('../../assets/images/milo-sad.png');
 
 export type Mood = 'good' | 'low';
+
+// Lets the tapped card visibly light up before the screen hands off, so the
+// choice reads as registered rather than an instant cut.
+const SELECT_HANDOFF_DELAY_MS = 350;
 
 export interface MoodSelectScreenProps {
   /**
@@ -25,9 +29,21 @@ export interface MoodSelectScreenProps {
 /**
  * Mood Select screen — matches the Anonyverse Figma frame "Mood Select"
  * (node 10:839). Picking a mood is the action itself (no separate
- * "Continue" CTA): tapping a card hands off immediately.
+ * "Continue" CTA): tapping a card marks it selected and hands off after
+ * SELECT_HANDOFF_DELAY_MS, long enough for the selected/dimmed styling to
+ * register before the screen changes.
  */
 export function MoodSelectScreen({ showProgress, onSelectMood }: MoodSelectScreenProps) {
+  const [selectedMood, setSelectedMood] = useState<Mood | null>(null);
+
+  const handlePick = (mood: Mood) => {
+    if (selectedMood) {
+      return;
+    }
+    setSelectedMood(mood);
+    setTimeout(() => onSelectMood(mood), SELECT_HANDOFF_DELAY_MS);
+  };
+
   return (
     <View style={styles.root}>
       <BackgroundGradient />
@@ -53,7 +69,9 @@ export function MoodSelectScreen({ showProgress, onSelectMood }: MoodSelectScree
               label="I'm feeling good"
               labelColor={colors.moodGoodLabel}
               subtitle={"Mili's day is going\nwell too"}
-              onPress={() => onSelectMood('good')}
+              selected={selectedMood === 'good'}
+              dimmed={selectedMood !== null && selectedMood !== 'good'}
+              onPress={() => handlePick('good')}
             />
             <MoodCard
               gradient={colors.moodLowCardGradient}
@@ -63,7 +81,9 @@ export function MoodSelectScreen({ showProgress, onSelectMood }: MoodSelectScree
               label="I'm feeling low"
               labelColor={colors.moodLowLabel}
               subtitle="Milo will sit with you"
-              onPress={() => onSelectMood('low')}
+              selected={selectedMood === 'low'}
+              dimmed={selectedMood !== null && selectedMood !== 'low'}
+              onPress={() => handlePick('low')}
             />
           </View>
 
@@ -93,6 +113,8 @@ interface MoodCardProps {
   label: string;
   labelColor: string;
   subtitle: string;
+  selected: boolean;
+  dimmed: boolean;
   onPress: () => void;
 }
 
@@ -104,6 +126,8 @@ function MoodCard({
   label,
   labelColor,
   subtitle,
+  selected,
+  dimmed,
   onPress,
 }: MoodCardProps) {
   // A stable id per mounted instance — deriving it from the label instead
@@ -117,8 +141,20 @@ function MoodCard({
       onPress={onPress}
       accessibilityRole="button"
       accessibilityLabel={label}
-      style={({ pressed }) => [styles.moodCard, { borderColor }, pressed && styles.moodCardPressed]}
+      accessibilityState={{ selected }}
+      style={({ pressed }) => [
+        styles.moodCard,
+        { borderColor },
+        selected && styles.moodCardSelected,
+        dimmed && styles.moodCardDimmed,
+        pressed && styles.moodCardPressed,
+      ]}
     >
+      {selected ? (
+        <View style={styles.moodCardCheck}>
+          <Text style={styles.moodCardCheckGlyph}>{'✓'}</Text>
+        </View>
+      ) : null}
       {/* Clipping lives on this absolutely-positioned, unshadowed layer —
           putting overflow:'hidden' directly on the Pressable above (which
           also carries the shadow) would defeat the shadow on iOS, and
@@ -186,6 +222,29 @@ const styles = StyleSheet.create({
   },
   moodCardPressed: {
     opacity: 0.85,
+  },
+  moodCardSelected: {
+    borderWidth: 3,
+  },
+  moodCardDimmed: {
+    opacity: 0.45,
+  },
+  moodCardCheck: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.ink,
+    zIndex: 1,
+  },
+  moodCardCheckGlyph: {
+    fontFamily: fontFamily.bold,
+    fontSize: 13,
+    color: colors.white,
   },
   moodCardClip: {
     borderRadius: 28,
