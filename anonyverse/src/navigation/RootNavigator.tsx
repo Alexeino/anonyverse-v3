@@ -16,6 +16,7 @@ import { MoodSelectScreen, type Mood } from '../screens/moodSelect/MoodSelectScr
 import { TopicsScreen, type TopicsSelection } from '../screens/topics/TopicsScreen';
 import { VerificationScreen } from '../screens/verification/VerificationScreen';
 import { posthog } from '../config/posthog';
+import { useAnalyticsCapture } from '../hooks/usePosthogHooks';
 import type { RootStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -44,6 +45,7 @@ function VerificationRoute() {
   const [mood, setMood] = useState<Mood | null>(null);
   const [selection, setSelection] = useState<TopicsSelection | null>(null);
   const moodSelectedRef = useRef(false);
+  const captureAnalytics = useAnalyticsCapture();
 
   const handleVerified = useCallback(() => {
     setStep('mood_select');
@@ -54,14 +56,16 @@ function VerificationRoute() {
       return;
     }
     moodSelectedRef.current = true;
+    captureAnalytics('mood_selected', { mood: selectedMood, is_first_time: true });
     setMood(selectedMood);
     setStep('topics');
-  }, []);
+  }, [captureAnalytics]);
 
   const handleFindSomeone = useCallback((topicsSelection: TopicsSelection) => {
+    captureAnalytics('topic_selected', { topics: topicsSelection.tags });
     setSelection(topicsSelection);
     setStep('finding_match');
-  }, []);
+  }, [captureAnalytics]);
 
   const handleCancelSearch = useCallback(() => {
     setStep('topics');
@@ -116,20 +120,24 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
   const [mood, setMood] = useState<Mood | null>(null);
   const [selection, setSelection] = useState<TopicsSelection | null>(null);
   const moodSelectedRef = useRef(false);
+  const captureAnalytics = useAnalyticsCapture();
+  const { showProgress } = route.params;
 
   const handleSelectMood = useCallback((selectedMood: Mood) => {
     if (moodSelectedRef.current) {
       return;
     }
     moodSelectedRef.current = true;
+    captureAnalytics('mood_selected', { mood: selectedMood, is_first_time: showProgress });
     setMood(selectedMood);
     setStep('topics');
-  }, []);
+  }, [captureAnalytics, showProgress]);
 
   const handleFindSomeone = useCallback((topicsSelection: TopicsSelection) => {
+    captureAnalytics('topic_selected', { topics: topicsSelection.tags });
     setSelection(topicsSelection);
     setStep('finding_match');
-  }, []);
+  }, [captureAnalytics]);
 
   const handleCancelSearch = useCallback(() => {
     setStep('topics');

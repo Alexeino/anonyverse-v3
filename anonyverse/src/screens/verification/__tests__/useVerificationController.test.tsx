@@ -1,10 +1,13 @@
 import React from 'react';
 import ReactTestRenderer, { act } from 'react-test-renderer';
+import { usePostHog } from 'posthog-react-native';
 import type { AuthService } from '../../../services/auth/AuthService';
 import type { VerifyOutcome } from '../../../services/auth/types';
 import type { DeviceIdentityService } from '../../../services/deviceIdentity/DeviceIdentityService';
 import type { SessionStore } from '../../../services/session/SessionStore';
 import { MAX_VERIFY_ATTEMPTS, useVerificationController } from '../useVerificationController';
+
+const mockPostHogClient = jest.mocked(usePostHog)();
 
 jest.mock('react-native-webview', () => {
   const ReactActual = require('react');
@@ -162,6 +165,7 @@ describe('useVerificationController', () => {
     expect(harness.latest.phase).toBe('verified');
     expect(deviceIdentityService.setDeviceId).toHaveBeenCalledWith('new-device-id');
     expect(harness.sessionStore.setToken).toHaveBeenCalledWith(token);
+    expect(mockPostHogClient.identify).toHaveBeenCalledWith('new-device-id');
     expect(harness.onVerified).not.toHaveBeenCalled();
 
     act(() => {
@@ -217,6 +221,7 @@ describe('useVerificationController', () => {
     expect(harness.latest.isContinuing).toBe(false);
     expect(harness.latest.turnstile.token).toBe('challenge-token');
     expect(harness.onVerified).not.toHaveBeenCalled();
+    expect(mockPostHogClient.identify).not.toHaveBeenCalled();
   });
 
   it('handleRetry resets Turnstile and returns to verifying, keeping the attempt count', async () => {
@@ -295,6 +300,7 @@ describe('useVerificationController', () => {
     expect(authService.verify).not.toHaveBeenCalled();
     expect(harness.latest.phase).toBe('failed');
     expect(harness.latest.attempts).toBe(1);
+    expect(mockPostHogClient.capture).toHaveBeenCalledWith('verification_failed', { reason: 'network_error' });
   });
 
   it('handleContinue only fires onVerified once even if called twice', async () => {

@@ -4,6 +4,7 @@ import type { AuthService } from '../../services/auth/AuthService';
 import type { DeviceIdentityService } from '../../services/deviceIdentity/DeviceIdentityService';
 import type { SessionStore } from '../../services/session/SessionStore';
 import { useTurnstile, type UseTurnstileResult } from '../../services/turnstile/useTurnstile';
+import { useAnalyticsCapture, useCaptureEvent, useIdentifyDevice } from '../../hooks/usePosthogHooks';
 
 export type VerificationPhase = 'verifying' | 'verified' | 'failed';
 
@@ -55,6 +56,10 @@ export function useVerificationController(
   const verifyingRef = useRef(false);
   const continuedRef = useRef(false);
 
+  useCaptureEvent("verification_started")
+  const captureAnalytics = useAnalyticsCapture();
+  const identifyDevice = useIdentifyDevice();
+
   const turnstile = useTurnstile(env.turnstileSiteKey, 'light');
   const { token, error: turnstileError, reset } = turnstile;
 
@@ -66,10 +71,13 @@ export function useVerificationController(
     setIsContinuing(true);
   }, []);
 
-  const recordFailure = useCallback(() => {
+  const recordFailure = useCallback((error: any) => {
     setAttempts(current => current + 1);
     setPhase('failed');
-  }, []);
+    captureAnalytics("verification_failed", {
+      reason: error instanceof Error ? error.message : String(error ?? 'unknown')
+    })
+  }, [captureAnalytics]);
 
   useEffect(() => {
     if (!token || verifyingRef.current) {
@@ -99,21 +107,23 @@ export function useVerificationController(
           return;
         }
         sessionStore.setToken(outcome.token);
+        identifyDevice(outcome.deviceId);
         if (__DEV__) {
           console.log(`[Verification] Device "${outcome.deviceId}" verified successfully.`);
         }
         setPhase('verified');
+        captureAnalytics("verification_succeeded")
         return;
       }
 
       console.error('[Verification] Backend rejected the Turnstile token.', outcome.error);
-      recordFailure();
+      recordFailure(outcome?.error);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [token, authService, deviceIdentityService, sessionStore, recordFailure]);
+  }, [token, authService, deviceIdentityService, sessionStore, recordFailure, captureAnalytics, identifyDevice]);
 
   useEffect(() => {
     if (!turnstileError) {
@@ -122,7 +132,7 @@ export function useVerificationController(
     if (__DEV__) {
       console.error('[Verification] Turnstile widget reported an error.', turnstileError);
     }
-    recordFailure();
+    recordFailure(turnstileError);
   }, [turnstileError, recordFailure]);
 
   useEffect(() => {

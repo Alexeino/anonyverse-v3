@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { AuthService } from '../../services/auth/AuthService';
 import type { DeviceIdentityService } from '../../services/deviceIdentity/DeviceIdentityService';
 import type { SessionStore } from '../../services/session/SessionStore';
-import { posthog } from '../../config/posthog';
+import { useCaptureEvent, useIdentifyDevice } from '../../hooks/usePosthogHooks';
 
 /**
  * Where the Entry screen hands off to once its job is done. These are not
@@ -44,11 +44,13 @@ export function useEntryController(
   const [phase, setPhase] = useState<EntryPhase>('checking');
   const [isContinuing, setIsContinuing] = useState(false);
 
+  useCaptureEvent("app_launched")
+  const identifyDevice = useIdentifyDevice();
+
   useEffect(() => {
     let cancelled = false;
 
     async function bootstrap() {
-      posthog?.capture("test_event")
       const deviceId = await deviceIdentityService.getDeviceId();
 
       if (cancelled) {
@@ -80,6 +82,7 @@ export function useEntryController(
           }
 
           sessionStore.setToken(outcome.token);
+          identifyDevice(outcome.deviceId);
           if (__DEV__) {
             console.log(
               `[Entry] Device "${outcome.deviceId}" exists and is verified — no verification required.`,
@@ -115,7 +118,7 @@ export function useEntryController(
     return () => {
       cancelled = true;
     };
-  }, [deviceIdentityService, authService, sessionStore]);
+  }, [deviceIdentityService, authService, sessionStore, identifyDevice]);
 
   useEffect(() => {
     if (!isContinuing) {
