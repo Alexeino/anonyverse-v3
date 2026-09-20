@@ -48,6 +48,10 @@ function makeChatSocketService({
     },
     sendMessage,
     onReceiveMessage: () => () => {},
+    sendTyping: () => {},
+    sendTypingStop: () => {},
+    onPartnerTyping: () => () => {},
+    onPartnerTypingStop: () => () => {},
     disconnect,
   };
 

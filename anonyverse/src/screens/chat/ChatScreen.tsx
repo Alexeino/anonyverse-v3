@@ -1,6 +1,17 @@
-import React, { useRef } from 'react';
-import { Image, LayoutAnimation, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import { KeyboardStickyView } from 'react-native-keyboard-controller';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  Animated,
+  Image,
+  PanResponder,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type LayoutChangeEvent,
+} from 'react-native';
+import { KeyboardStickyView, useKeyboardState } from 'react-native-keyboard-controller';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
 import { colors, fontFamily, radii, spacing, typography } from '../../design/tokens';
@@ -28,19 +39,29 @@ export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
     handleLeave,
     skipSecondsRemaining,
     canSkip,
+    partnerTyping,
+    replyingTo,
+    handleReply,
+    handleCancelReply,
   } = useChatController(chatSocketService, onLeave);
   const scrollRef = useRef<React.ElementRef<typeof ScrollView>>(null);
   const insets = useSafeAreaInsets();
   const bottomInset = Math.max(insets.bottom, 12);
   const keyboardGap = 8;
+  const keyboardHeight = useKeyboardState(state => (state.isVisible ? state.height : 0));
+  const [inputBarHeight, setInputBarHeight] = useState(0);
+  const sendButtonScale = useRef(new Animated.Value(1)).current;
 
   const handleReport = () => {
     console.log('[Chat] Report tapped — not implemented yet.');
   };
 
-  const handleDismissIntroCard = () => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    handleDismissIntro();
+  const handleSendPressIn = () => {
+    Animated.spring(sendButtonScale, { toValue: 0.88, useNativeDriver: true, friction: 5, tension: 100 }).start();
+  };
+
+  const handleSendPressOut = () => {
+    Animated.spring(sendButtonScale, { toValue: 1, useNativeDriver: true, friction: 5, tension: 100 }).start();
   };
 
   return (
@@ -81,38 +102,69 @@ export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
         <ScrollView
           ref={scrollRef}
           style={styles.thread}
-          contentContainerStyle={styles.threadContent}
+          contentContainerStyle={[styles.threadContent, { paddingBottom: 16 + inputBarHeight + keyboardHeight }]}
           onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
         >
-          {!introDismissed ? <IntroCard onDismiss={handleDismissIntroCard} /> : null}
+          {!introDismissed ? <IntroCard onDismiss={handleDismissIntro} /> : null}
 
           {messages.map(message => (
-            <MessageBubble key={message.id} message={message} />
+            <MessageBubble key={message.id} message={message} onReply={handleReply} />
           ))}
+
+          {partnerTyping ? <TypingBubble /> : null}
         </ScrollView>
 
         <KeyboardStickyView
           style={[styles.inputBar, { paddingBottom: bottomInset }]}
           offset={{ closed: 0, opened: bottomInset - keyboardGap }}
+          onLayout={event => setInputBarHeight(event.nativeEvent.layout.height)}
         >
-          <TextInput
-            value={inputValue}
-            onChangeText={setInputValue}
-            placeholder="Say something..."
-            placeholderTextColor={colors.inkMuted}
-            style={styles.input}
-            multiline
-            textAlignVertical="center"
-            onSubmitEditing={handleSend}
-          />
-          <Pressable
-            onPress={handleSend}
-            accessibilityRole="button"
-            accessibilityLabel="Send message"
-            style={({ pressed }) => [styles.sendButton, pressed && styles.pressed]}
-          >
-            <Text style={styles.sendGlyph}>{'↑'}</Text>
-          </Pressable>
+          {replyingTo ? (
+            <View style={styles.replyComposer}>
+              <View style={styles.replyComposerBar} />
+              <View style={styles.replyComposerTextColumn}>
+                <Text style={styles.replyComposerSender}>
+                  Replying to {replyingTo.sender === 'me' ? 'yourself' : 'Stranger'}
+                </Text>
+                <Text style={styles.replyComposerText} numberOfLines={1}>
+                  {replyingTo.text}
+                </Text>
+              </View>
+              <Pressable
+                onPress={handleCancelReply}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel reply"
+                hitSlop={8}
+              >
+                <Text style={styles.replyComposerClose}>{'✕'}</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
+          <View style={styles.inputRow}>
+            <TextInput
+              value={inputValue}
+              onChangeText={setInputValue}
+              placeholder="Say something..."
+              placeholderTextColor={colors.inkMuted}
+              style={styles.input}
+              multiline
+              textAlignVertical="center"
+              onSubmitEditing={handleSend}
+            />
+            <Pressable
+              onPress={handleSend}
+              onPressIn={handleSendPressIn}
+              onPressOut={handleSendPressOut}
+              accessibilityRole="button"
+              accessibilityLabel="Send message"
+              style={({ pressed }) => [styles.sendButton, pressed && styles.pressed]}
+            >
+              <Animated.View style={{ transform: [{ scale: sendButtonScale }] }}>
+                <Text style={styles.sendGlyph}>{'↑'}</Text>
+              </Animated.View>
+            </Pressable>
+          </View>
         </KeyboardStickyView>
       </SafeAreaView>
     </View>
@@ -120,30 +172,99 @@ export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
 }
 
 function IntroCard({ onDismiss }: { onDismiss: () => void }) {
+  const opacity = useRef(new Animated.Value(1)).current;
+  const scale = useRef(new Animated.Value(1)).current;
+  const height = useRef(new Animated.Value(0)).current;
+  const [measuredHeight, setMeasuredHeight] = useState<number | null>(null);
+
+  const handleContainerLayout = (event: LayoutChangeEvent) => {
+    if (measuredHeight === null) {
+      const nextHeight = event.nativeEvent.layout.height;
+      setMeasuredHeight(nextHeight);
+      height.setValue(nextHeight);
+    }
+  };
+
+  const handleDismiss = () => {
+    Animated.sequence([
+      Animated.parallel([
+        Animated.timing(opacity, { toValue: 0, duration: 200, useNativeDriver: true }),
+        Animated.timing(scale, { toValue: 0.92, duration: 200, useNativeDriver: true }),
+      ]),
+      Animated.timing(height, { toValue: 0, duration: 220, useNativeDriver: false }),
+    ]).start(({ finished }) => {
+      if (finished) {
+        onDismiss();
+      }
+    });
+  };
+
   return (
-    <View style={styles.introCard}>
-      <View style={styles.introHeader}>
-        <Image source={miliHappy} resizeMode="contain" style={styles.introMascot} />
-        <Text style={styles.introTitle}>{'Three things before\nyou start'}</Text>
-      </View>
-      {[
-        "Treat them like someone you'd want to meet again.",
-        'No slurs, no harassment, nothing sexual.',
-        'Never share your real name or details.',
-      ].map(rule => (
-        <View key={rule} style={styles.introRow}>
-          <Text style={styles.introCheck}>{'✓'}</Text>
-          <Text style={styles.introRuleText}>{rule}</Text>
+    <Animated.View
+      style={measuredHeight === null ? undefined : { height, overflow: 'hidden' }}
+      onLayout={handleContainerLayout}
+    >
+      <Animated.View style={[styles.introCard, { opacity, transform: [{ scale }] }]}>
+        <View style={styles.introHeader}>
+          <Image source={miliHappy} resizeMode="contain" style={styles.introMascot} />
+          <Text style={styles.introTitle}>{'Three things before\nyou start'}</Text>
         </View>
-      ))}
-      <Pressable
-        onPress={onDismiss}
-        accessibilityRole="button"
-        accessibilityLabel="Got it, let's talk"
-        style={({ pressed }) => [styles.introButton, pressed && styles.pressed]}
-      >
-        <Text style={styles.introButtonLabel}>Got it — let's talk</Text>
-      </Pressable>
+        {[
+          "Treat them like someone you'd want to meet again.",
+          'No slurs, no harassment, nothing sexual.',
+          'Never share your real name or details.',
+        ].map(rule => (
+          <View key={rule} style={styles.introRow}>
+            <Text style={styles.introCheck}>{'✓'}</Text>
+            <Text style={styles.introRuleText}>{rule}</Text>
+          </View>
+        ))}
+        <Pressable
+          onPress={handleDismiss}
+          accessibilityRole="button"
+          accessibilityLabel="Got it, let's talk"
+          style={({ pressed }) => [styles.introButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.introButtonLabel}>Got it — let's talk</Text>
+        </Pressable>
+      </Animated.View>
+    </Animated.View>
+  );
+}
+
+function TypingBubble() {
+  const dot1 = useRef(new Animated.Value(0)).current;
+  const dot2 = useRef(new Animated.Value(0)).current;
+  const dot3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const bounce = (value: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(value, { toValue: 1, duration: 300, useNativeDriver: true }),
+          Animated.timing(value, { toValue: 0, duration: 300, useNativeDriver: true }),
+          Animated.delay(450 - delay),
+        ]),
+      );
+
+    const animations = [bounce(dot1, 0), bounce(dot2, 150), bounce(dot3, 300)];
+    animations.forEach(animation => animation.start());
+    return () => animations.forEach(animation => animation.stop());
+  }, [dot1, dot2, dot3]);
+
+  const dotStyle = (value: Animated.Value) => ({
+    opacity: value.interpolate({ inputRange: [0, 1], outputRange: [0.3, 1] }),
+    transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [0, -4] }) }],
+  });
+
+  return (
+    <View style={[styles.bubbleRow, styles.bubbleRowPartner]}>
+      <View style={[styles.bubble, styles.bubblePartner, styles.typingBubble]}>
+        <Animated.View style={[styles.typingDot, dotStyle(dot1)]} />
+        <Animated.View style={[styles.typingDot, dotStyle(dot2)]} />
+        <Animated.View style={[styles.typingDot, dotStyle(dot3)]} />
+      </View>
     </View>
   );
 }
@@ -158,19 +279,92 @@ function SystemPill({ text }: { text: string }) {
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+const REPLY_SWIPE_TRIGGER = 56;
+const REPLY_SWIPE_MAX = 88;
+
+function MessageBubble({ message, onReply }: { message: ChatMessage; onReply: (message: ChatMessage) => void }) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const enterOpacity = useRef(new Animated.Value(0)).current;
+  const enterTranslateY = useRef(new Animated.Value(14)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(enterOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
+      Animated.spring(enterTranslateY, { toValue: 0, useNativeDriver: true, friction: 7, tension: 70 }),
+    ]).start();
+  }, [enterOpacity, enterTranslateY]);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_evt, gesture) =>
+        Math.abs(gesture.dx) > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+      onPanResponderMove: (_evt, gesture) => {
+        const clamped = Math.max(-REPLY_SWIPE_MAX, Math.min(REPLY_SWIPE_MAX, gesture.dx));
+        translateX.setValue(clamped);
+      },
+      onPanResponderRelease: (_evt, gesture) => {
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 7, tension: 60 }).start();
+        if (Math.abs(gesture.dx) > REPLY_SWIPE_TRIGGER) {
+          onReply(message);
+        }
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(translateX, { toValue: 0, useNativeDriver: true, friction: 7, tension: 60 }).start();
+      },
+    }),
+  ).current;
+
   if (message.sender === 'system') {
     return <SystemPill text={message.text} />;
   }
 
   const isMe = message.sender === 'me';
+  const leftIconOpacity = translateX.interpolate({
+    inputRange: [0, REPLY_SWIPE_TRIGGER],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+  const rightIconOpacity = translateX.interpolate({
+    inputRange: [-REPLY_SWIPE_TRIGGER, 0],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+
   return (
     <View style={[styles.bubbleRow, isMe ? styles.bubbleRowMe : styles.bubbleRowPartner]}>
-      <View style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubblePartner]}>
+      <Animated.View pointerEvents="none" style={[styles.replyIcon, styles.replyIconLeft, { opacity: leftIconOpacity }]}>
+        <Text style={styles.replyIconGlyph}>{'↩'}</Text>
+      </Animated.View>
+
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={[
+          styles.bubble,
+          isMe ? styles.bubbleMe : styles.bubblePartner,
+          { opacity: enterOpacity, transform: [{ translateX }, { translateY: enterTranslateY }] },
+        ]}
+      >
+        {message.replyTo ? (
+          <View style={[styles.replyPreview, isMe ? styles.replyPreviewMe : styles.replyPreviewPartner]}>
+            <Text style={[styles.replyPreviewSender, isMe ? styles.replyPreviewSenderMe : styles.replyPreviewSenderPartner]}>
+              {message.replyTo.sender === 'me' ? 'You' : 'Stranger'}
+            </Text>
+            <Text
+              style={[styles.replyPreviewText, isMe ? styles.replyPreviewTextMe : styles.replyPreviewTextPartner]}
+              numberOfLines={1}
+            >
+              {message.replyTo.text}
+            </Text>
+          </View>
+        ) : null}
         <Text style={[styles.bubbleText, isMe ? styles.bubbleTextMe : styles.bubbleTextPartner]}>
           {message.text}
         </Text>
-      </View>
+      </Animated.View>
+
+      <Animated.View pointerEvents="none" style={[styles.replyIcon, styles.replyIconRight, { opacity: rightIconOpacity }]}>
+        <Text style={styles.replyIconGlyph}>{'↩'}</Text>
+      </Animated.View>
     </View>
   );
 }
@@ -350,12 +544,126 @@ const styles = StyleSheet.create({
   bubbleTextPartner: {
     color: colors.ink,
   },
+  replyIcon: {
+    position: 'absolute',
+    top: '50%',
+    marginTop: -14,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.overlayBackground,
+  },
+  replyIconLeft: {
+    left: -6,
+  },
+  replyIconRight: {
+    right: -6,
+  },
+  replyIconGlyph: {
+    fontSize: 14,
+    color: colors.ink,
+  },
+  replyPreview: {
+    borderLeftWidth: 3,
+    paddingLeft: 8,
+    marginBottom: 6,
+  },
+  replyPreviewMe: {
+    borderLeftColor: colors.white,
+  },
+  replyPreviewPartner: {
+    borderLeftColor: colors.ink,
+  },
+  replyPreviewSender: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 11,
+  },
+  replyPreviewSenderMe: {
+    color: colors.white,
+  },
+  replyPreviewSenderPartner: {
+    color: colors.ink,
+  },
+  replyPreviewText: {
+    marginTop: 1,
+    fontFamily: typography.bubble.fontFamily,
+    fontSize: 12,
+  },
+  replyPreviewTextMe: {
+    color: colors.white,
+    opacity: 0.8,
+  },
+  replyPreviewTextPartner: {
+    color: colors.body,
+  },
+  typingBubble: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 14,
+  },
+  typingDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: colors.inkMuted,
+  },
   inputBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: spacing.screenHorizontal,
+    paddingTop: 8,
+    backgroundColor: 'transparent',
+  },
+  inputRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     gap: 10,
-    paddingHorizontal: spacing.screenHorizontal,
-    paddingTop: 8,
+  },
+  replyComposer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.white,
+    borderRadius: 14,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+    shadowColor: colors.cardShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  replyComposerBar: {
+    width: 3,
+    alignSelf: 'stretch',
+    minHeight: 28,
+    borderRadius: 2,
+    backgroundColor: colors.ink,
+    marginRight: 10,
+  },
+  replyComposerTextColumn: {
+    flex: 1,
+  },
+  replyComposerSender: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 12,
+    color: colors.ink,
+  },
+  replyComposerText: {
+    marginTop: 2,
+    fontFamily: typography.bubble.fontFamily,
+    fontSize: 13,
+    color: colors.body,
+  },
+  replyComposerClose: {
+    fontSize: 16,
+    color: colors.inkMuted,
+    paddingHorizontal: 6,
   },
   input: {
     flex: 1,
@@ -373,10 +681,12 @@ const styles = StyleSheet.create({
     shadowOpacity: 1,
     shadowRadius: 8,
     elevation: 2,
+    marginBottom: 10,
   },
   sendButton: {
     width: 44,
     height: 44,
+    marginBottom: 16, 
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
