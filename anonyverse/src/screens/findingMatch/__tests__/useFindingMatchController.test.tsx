@@ -1,5 +1,6 @@
 import React from 'react';
 import ReactTestRenderer, { act } from 'react-test-renderer';
+import { usePostHog } from 'posthog-react-native';
 import type { ChatSocketService } from '../../../services/chatSocket/ChatSocketService';
 import type { ChatSocketConnectError, JoinChatAck, MatchFoundEvent } from '../../../services/chatSocket/types';
 import type { AuthToken } from '../../../services/auth/types';
@@ -15,6 +16,8 @@ const TOKEN: AuthToken = {
 };
 
 const SELECTION: TopicsSelection = { mood: 'good', tags: ['life', 'work'], optedIn: true };
+
+const mockPostHogClient = jest.mocked(usePostHog)();
 
 function makeSessionStore(token: AuthToken | null): SessionStore {
   return {
@@ -123,6 +126,7 @@ describe('useFindingMatchController', () => {
     expect(harness.latest.phase).toBe('error');
     expect(harness.latest.error).toEqual({ reason: 'MISSING_TOKEN' });
     expect(createChatSocketService).not.toHaveBeenCalled();
+    expect(mockPostHogClient.capture).toHaveBeenCalledWith('match_search_started', { topics: ['life', 'work'] });
   });
 
   it('happy path: connects, joins the queue, and stays searching until match_found', async () => {
@@ -132,12 +136,17 @@ describe('useFindingMatchController', () => {
     expect(fake.connect).toHaveBeenCalledWith('access-token', 'life');
     expect(fake.joinChat).toHaveBeenCalledWith(['life', 'work'], 'good', true);
     expect(harness.latest.phase).toBe('searching');
+    expect(mockPostHogClient.capture).toHaveBeenCalledWith('match_search_started', { topics: ['life', 'work'] });
 
     act(() => {
       fake.emitMatchFound({ partner: 'partner-id' });
     });
 
     expect(harness.latest.phase).toBe('matched');
+    expect(mockPostHogClient.capture).toHaveBeenCalledWith(
+      'match_found',
+      expect.objectContaining({ topics: ['life', 'work'], wait_duration_ms: expect.any(Number) }),
+    );
   });
 
   it('connect_error: surfaces the mapped reason and does not attempt join_chat', async () => {

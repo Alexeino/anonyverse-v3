@@ -1,10 +1,13 @@
 import React from 'react';
 import ReactTestRenderer, { act } from 'react-test-renderer';
+import { usePostHog } from 'posthog-react-native';
 import type { AuthService } from '../../../services/auth/AuthService';
 import type { GetStartedOutcome } from '../../../services/auth/types';
 import type { DeviceIdentityService } from '../../../services/deviceIdentity/DeviceIdentityService';
 import type { SessionStore } from '../../../services/session/SessionStore';
 import { useEntryController, type EntryDestination } from '../useEntryController';
+
+const mockPostHogClient = jest.mocked(usePostHog)();
 
 function makeDeviceIdentityService(deviceId: string | null): DeviceIdentityService {
   return {
@@ -103,6 +106,7 @@ describe('useEntryController', () => {
     expect(latest?.isContinuing).toBe(true);
     expect(onContinue).not.toHaveBeenCalled();
     expect(sessionStore.setToken).toHaveBeenCalledWith(token);
+    expect(mockPostHogClient.identify).toHaveBeenCalledWith('existing-device-id');
 
     act(() => {
       jest.advanceTimersByTime(500);
@@ -122,6 +126,7 @@ describe('useEntryController', () => {
     expect(latest?.phase).toBe('ready');
     expect(latest?.isContinuing).toBe(false);
     expect(onContinue).not.toHaveBeenCalled();
+    expect(mockPostHogClient.identify).not.toHaveBeenCalled();
 
     act(() => {
       latest?.handleStart();
@@ -139,6 +144,7 @@ describe('useEntryController', () => {
     expect(latest?.phase).toBe('ready');
     expect(latest?.isContinuing).toBe(false);
     expect(onContinue).not.toHaveBeenCalled();
+    expect(mockPostHogClient.identify).not.toHaveBeenCalled();
   });
 
   it('no local device id: shows "Let\'s start" immediately and never calls get-started', async () => {

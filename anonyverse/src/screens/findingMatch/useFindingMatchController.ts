@@ -3,6 +3,7 @@ import type { ChatSocketService } from '../../services/chatSocket/ChatSocketServ
 import type { ChatSocketConnectError, ChatSocketConnectErrorReason } from '../../services/chatSocket/types';
 import type { SessionStore } from '../../services/session/SessionStore';
 import type { TopicsSelection } from '../topics/TopicsScreen';
+import { useAnalyticsCapture, useDurationTracking } from '../../hooks/usePosthogHooks';
 
 export type FindingMatchPhase = 'connecting' | 'searching' | 'matched' | 'error';
 
@@ -38,6 +39,25 @@ export function useFindingMatchController(
   const [phase, setPhase] = useState<FindingMatchPhase>('connecting');
   const [error, setError] = useState<{ reason: ChatSocketConnectErrorReason } | null>(null);
   const serviceRef = useRef<ChatSocketService | null>(null);
+  const captureAnalytics = useAnalyticsCapture();
+  const { start, captureEnd } = useDurationTracking();
+  // Kept fresh every render so the socket effect below can call the latest
+  // captureEnd without listing it in its dep array — captureEnd is derived
+  // from the PostHog client instance, and including it directly would
+  // re-run (and reconnect) the socket effect if that instance's identity
+  // ever changed.
+  const captureEndRef = useRef(captureEnd);
+  captureEndRef.current = captureEnd;
+
+  // Mount-once, independent of the connect/join_chat effect below (whose
+  // deps aren't a strict mount-once guarantee) — mirrors the
+  // verification_started pattern of firing regardless of what happens
+  // afterward.
+  useEffect(() => {
+    start();
+    captureAnalytics('match_search_started', { topics: selection.tags });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const token = sessionStore.getToken();
@@ -60,6 +80,7 @@ export function useFindingMatchController(
       if (__DEV__) {
         console.log('[FindingMatch] Match found — navigating to chat screen.', event.partner);
       }
+      captureEndRef.current('match_found', 'wait_duration_ms', { topics: selection.tags });
       setPhase('matched');
     });
 
