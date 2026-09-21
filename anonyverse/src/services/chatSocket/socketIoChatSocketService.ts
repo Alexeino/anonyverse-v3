@@ -6,14 +6,10 @@ import type {
   ChatSocketConnectErrorReason,
   JoinChatAck,
   MatchFoundEvent,
+  ReceiveMessageEvent,
 } from './types';
 
 const CONNECTION_TIMEOUT_MS = 10_000;
-// No ack/timeout contract is documented for join_chat (docs/api.md and the
-// backend snippet only show the happy path), but without one a dropped
-// socket or a server that never acks would leave the caller's promise
-// pending forever — so this guards against that rather than trusting the
-// server to always respond.
 const JOIN_CHAT_TIMEOUT_MS = 10_000;
 
 function joinChatOnSocket(
@@ -50,9 +46,6 @@ function joinChatOnSocket(
 }
 
 function mapConnectErrorReason(error: unknown): ChatSocketConnectErrorReason {
-  // Socket.IO delivers middleware-rejection details as an Error whose
-  // `.data` (or, on some server versions, `.reason` directly) carries the
-  // reason string the server rejected the handshake with — see docs/api.md.
   const reason =
     (error as { data?: { reason?: string }; reason?: string } | undefined)?.data?.reason ??
     (error as { reason?: string } | undefined)?.reason;
@@ -66,16 +59,27 @@ function mapConnectErrorReason(error: unknown): ChatSocketConnectErrorReason {
   return 'UNKNOWN_ERROR';
 }
 
-/**
- * socket.io-client-backed implementation of ChatSocketService, per the
- * Realtime API documented in docs/api.md §3.
- */
 export function createSocketIoChatSocketService(): ChatSocketService {
   let socket: Socket | null = null;
   const matchFoundHandlers = new Set<(event: MatchFoundEvent) => void>();
+  const receiveMessageHandlers = new Set<(event: ReceiveMessageEvent) => void>();
+  const partnerTypingHandlers = new Set<() => void>();
+  const partnerTypingStopHandlers = new Set<() => void>();
 
   function handleMatchFound(event: MatchFoundEvent) {
     matchFoundHandlers.forEach(handler => handler(event));
+  }
+
+  function handleReceiveMessage(event: ReceiveMessageEvent) {
+    receiveMessageHandlers.forEach(handler => handler(event));
+  }
+
+  function handlePartnerTyping() {
+    partnerTypingHandlers.forEach(handler => handler());
+  }
+
+  function handlePartnerTypingStop() {
+    partnerTypingStopHandlers.forEach(handler => handler());
   }
 
   return {
@@ -104,6 +108,9 @@ export function createSocketIoChatSocketService(): ChatSocketService {
         });
         socket = nextSocket;
         nextSocket.on('match_found', handleMatchFound);
+        nextSocket.on('receive_message', handleReceiveMessage);
+        nextSocket.on('partner_typing', handlePartnerTyping);
+        nextSocket.on('partner_typing_stop', handlePartnerTypingStop);
 
         let settled = false;
         function settle(run: () => void) {
@@ -155,11 +162,56 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       };
     },
 
+    sendMessage(text) {
+      if (!socket) {
+        return;
+      }
+      socket.emit('send_message', text);
+    },
+
+    onReceiveMessage(handler) {
+      receiveMessageHandlers.add(handler);
+      return () => {
+        receiveMessageHandlers.delete(handler);
+      };
+    },
+
+    sendTyping() {
+      if (!socket) {
+        return;
+      }
+      socket.emit('typing');
+    },
+
+    sendTypingStop() {
+      if (!socket) {
+        return;
+      }
+      socket.emit('typing_stop');
+    },
+
+    onPartnerTyping(handler) {
+      partnerTypingHandlers.add(handler);
+      return () => {
+        partnerTypingHandlers.delete(handler);
+      };
+    },
+
+    onPartnerTypingStop(handler) {
+      partnerTypingStopHandlers.add(handler);
+      return () => {
+        partnerTypingStopHandlers.delete(handler);
+      };
+    },
+
     disconnect() {
       if (!socket) {
         return;
       }
       socket.off('match_found', handleMatchFound);
+      socket.off('receive_message', handleReceiveMessage);
+      socket.off('partner_typing', handlePartnerTyping);
+      socket.off('partner_typing_stop', handlePartnerTypingStop);
       socket.disconnect();
       socket = null;
     },
