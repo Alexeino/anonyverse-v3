@@ -14,6 +14,8 @@ export interface ChatMessage {
   replyTo?: ReplyPreview;
 }
 
+export type RematchState = 'idle' | 'rematching';
+
 export interface UseChatControllerResult {
   messages: ChatMessage[];
   inputValue: string;
@@ -21,18 +23,28 @@ export interface UseChatControllerResult {
   introDismissed: boolean;
   handleDismissIntro: () => void;
   handleSend: () => void;
-  handleLeave: () => void;
   skipSecondsRemaining: number;
   canSkip: boolean;
   partnerTyping: boolean;
   replyingTo: ReplyPreview | null;
   handleReply: (message: ChatMessage) => void;
   handleCancelReply: () => void;
+  rematchState: RematchState;
+  skipUnavailableMessage: string | null;
+  handleSkip: () => void;
+  handleStopSearching: () => void;
 }
 
 const SKIP_UNLOCK_SECONDS = 10;
 
 const TYPING_STOP_DELAY_MS = 4000;
+
+// Matches docs/api.md's client-side rate limit for repeated skipping: 3+
+// skips within 8s stops auto-rematching and shows a transient
+// "Matchmaking unavailable" message instead of sending another skip_chat.
+const SKIP_RATE_LIMIT_WINDOW_MS = 8000;
+const SKIP_RATE_LIMIT_COUNT = 3;
+const SKIP_UNAVAILABLE_MESSAGE_MS = 3000;
 
 let messageIdCounter = 0;
 function nextMessageId(): string {
@@ -77,20 +89,26 @@ function parseIncomingMessage(raw: string): { text: string; replyTo?: ReplyPrevi
 }
 
 
+const CONNECTED_MESSAGE = "Connected with anonymous partner. Say Hi!";
+
 export function useChatController(chatSocketService: ChatSocketService, onLeave: () => void): UseChatControllerResult {
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
-    { id: nextMessageId(), sender: 'system', text: "Connected with anonymous partner. Say Hi!" },
+    { id: nextMessageId(), sender: 'system', text: CONNECTED_MESSAGE },
   ]);
   const [inputValue, setInputValueState] = useState('');
   const [introDismissed, setIntroDismissed] = useState(false);
   const [skipSecondsRemaining, setSkipSecondsRemaining] = useState(SKIP_UNLOCK_SECONDS);
   const [partnerTyping, setPartnerTyping] = useState(false);
   const [replyingTo, setReplyingTo] = useState<ReplyPreview | null>(null);
+  const [rematchState, setRematchState] = useState<RematchState>('idle');
+  const [skipUnavailableMessage, setSkipUnavailableMessage] = useState<string | null>(null);
   const serviceRef = useRef(chatSocketService);
   serviceRef.current = chatSocketService;
   const isTypingRef = useRef(false);
   const typingStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const partnerTypingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipTimestampsRef = useRef<number[]>([]);
+  const skipUnavailableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -110,7 +128,32 @@ export function useChatController(chatSocketService: ChatSocketService, onLeave:
       if (typingStopTimerRef.current) {
         clearTimeout(typingStopTimerRef.current);
       }
+      if (skipUnavailableTimerRef.current) {
+        clearTimeout(skipUnavailableTimerRef.current);
+      }
       serviceRef.current.disconnect();
+    };
+  }, [chatSocketService]);
+
+  useEffect(() => {
+    // A skip is driven entirely by these two server events rather than the
+    // button tap itself, so the "finding someone new" state appears the
+    // same way for both people in the chat — whichever of them tapped Skip.
+    const unsubscribeChatEnded = chatSocketService.onChatEnded(event => {
+      if (event.reason === 'skipped') {
+        setRematchState('rematching');
+      }
+    });
+    const unsubscribeMatchFound = chatSocketService.onMatchFound(() => {
+      setRematchState('idle');
+      setMessages([{ id: nextMessageId(), sender: 'system', text: CONNECTED_MESSAGE }]);
+      setReplyingTo(null);
+      setSkipSecondsRemaining(SKIP_UNLOCK_SECONDS);
+    });
+
+    return () => {
+      unsubscribeChatEnded();
+      unsubscribeMatchFound();
     };
   }, [chatSocketService]);
 
@@ -199,13 +242,33 @@ export function useChatController(chatSocketService: ChatSocketService, onLeave:
     setReplyingTo(null);
   }, []);
 
-  const handleLeave = useCallback(() => {
+  const handleSkip = useCallback(() => {
     if (skipSecondsRemaining > 0) {
       return;
     }
+    const now = Date.now();
+    skipTimestampsRef.current = skipTimestampsRef.current.filter(
+      timestamp => now - timestamp < SKIP_RATE_LIMIT_WINDOW_MS,
+    );
+    if (skipTimestampsRef.current.length >= SKIP_RATE_LIMIT_COUNT) {
+      if (skipUnavailableTimerRef.current) {
+        clearTimeout(skipUnavailableTimerRef.current);
+      }
+      setSkipUnavailableMessage('Matchmaking unavailable — try again in a moment');
+      skipUnavailableTimerRef.current = setTimeout(
+        () => setSkipUnavailableMessage(null),
+        SKIP_UNAVAILABLE_MESSAGE_MS,
+      );
+      return;
+    }
+    skipTimestampsRef.current.push(now);
+    serviceRef.current.sendSkipChat();
+  }, [skipSecondsRemaining]);
+
+  const handleStopSearching = useCallback(() => {
     serviceRef.current.disconnect();
     onLeave();
-  }, [onLeave, skipSecondsRemaining]);
+  }, [onLeave]);
 
   return {
     messages,
@@ -214,12 +277,15 @@ export function useChatController(chatSocketService: ChatSocketService, onLeave:
     introDismissed,
     handleDismissIntro,
     handleSend,
-    handleLeave,
     skipSecondsRemaining,
     canSkip: skipSecondsRemaining <= 0,
     partnerTyping,
     replyingTo,
     handleReply,
     handleCancelReply,
+    rematchState,
+    skipUnavailableMessage,
+    handleSkip,
+    handleStopSearching,
   };
 }

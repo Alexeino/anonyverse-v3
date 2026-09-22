@@ -1,22 +1,28 @@
 import React from 'react';
 import ReactTestRenderer, { act } from 'react-test-renderer';
 import type { ChatSocketService } from '../../../services/chatSocket/ChatSocketService';
-import type { ReceiveMessageEvent } from '../../../services/chatSocket/types';
+import type { ChatEndedEvent, MatchFoundEvent, ReceiveMessageEvent } from '../../../services/chatSocket/types';
 import { useChatController } from '../useChatController';
 
 function makeChatSocketService() {
   const receiveHandlers = new Set<(event: ReceiveMessageEvent) => void>();
   const partnerTypingHandlers = new Set<() => void>();
   const partnerTypingStopHandlers = new Set<() => void>();
+  const matchFoundHandlers = new Set<(event: MatchFoundEvent) => void>();
+  const chatEndedHandlers = new Set<(event: ChatEndedEvent) => void>();
   const sendMessage = jest.fn();
   const sendTyping = jest.fn();
   const sendTypingStop = jest.fn();
+  const sendSkipChat = jest.fn();
   const disconnect = jest.fn();
 
   const service: ChatSocketService = {
     connect: jest.fn(() => Promise.resolve()),
     joinChat: jest.fn(() => Promise.resolve({ ok: true, status: 'matched' as const })),
-    onMatchFound: () => () => {},
+    onMatchFound: handler => {
+      matchFoundHandlers.add(handler);
+      return () => matchFoundHandlers.delete(handler);
+    },
     sendMessage,
     onReceiveMessage: handler => {
       receiveHandlers.add(handler);
@@ -32,6 +38,11 @@ function makeChatSocketService() {
       partnerTypingStopHandlers.add(handler);
       return () => partnerTypingStopHandlers.delete(handler);
     },
+    sendSkipChat,
+    onChatEnded: handler => {
+      chatEndedHandlers.add(handler);
+      return () => chatEndedHandlers.delete(handler);
+    },
     disconnect,
   };
 
@@ -40,10 +51,14 @@ function makeChatSocketService() {
     sendMessage,
     sendTyping,
     sendTypingStop,
+    sendSkipChat,
     disconnect,
     emitReceiveMessage: (event: ReceiveMessageEvent) => receiveHandlers.forEach(handler => handler(event)),
     emitPartnerTyping: () => partnerTypingHandlers.forEach(handler => handler()),
     emitPartnerTypingStop: () => partnerTypingStopHandlers.forEach(handler => handler()),
+    emitMatchFound: (event: MatchFoundEvent = { partner: 'partner-2' }) =>
+      matchFoundHandlers.forEach(handler => handler(event)),
+    emitChatEnded: (event: ChatEndedEvent) => chatEndedHandlers.forEach(handler => handler(event)),
   };
 }
 
@@ -160,19 +175,18 @@ describe('useChatController', () => {
     expect(harness.latest.introDismissed).toBe(true);
   });
 
-  it('handleLeave is a no-op before the 10s skip unlock', async () => {
+  it('handleSkip is a no-op before the 10s skip unlock', async () => {
     const fake = makeChatSocketService();
     const harness = await render(fake.service);
 
     act(() => {
-      harness.latest.handleLeave();
+      harness.latest.handleSkip();
     });
 
-    expect(fake.disconnect).not.toHaveBeenCalled();
-    expect(harness.onLeave).not.toHaveBeenCalled();
+    expect(fake.sendSkipChat).not.toHaveBeenCalled();
   });
 
-  it('handleLeave disconnects the socket and calls onLeave once the 10s skip unlock elapses', async () => {
+  it('handleSkip sends skip_chat once the 10s skip unlock elapses', async () => {
     jest.useFakeTimers();
     const fake = makeChatSocketService();
     const harness = await render(fake.service);
@@ -181,11 +195,97 @@ describe('useChatController', () => {
       jest.advanceTimersByTime(10_000);
     });
     act(() => {
-      harness.latest.handleLeave();
+      harness.latest.handleSkip();
+    });
+
+    expect(fake.sendSkipChat).toHaveBeenCalledTimes(1);
+    jest.useRealTimers();
+  });
+
+  it('handleStopSearching disconnects the socket and calls onLeave', async () => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      harness.latest.handleStopSearching();
     });
 
     expect(fake.disconnect).toHaveBeenCalled();
     expect(harness.onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it('chat_ended with reason "skipped" sets rematchState to "rematching"', async () => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    expect(harness.latest.rematchState).toBe('idle');
+
+    act(() => {
+      fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
+    });
+
+    expect(harness.latest.rematchState).toBe('rematching');
+  });
+
+  it('match_found while already chatting resets the thread and clears rematchState', async () => {
+    jest.useFakeTimers();
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      harness.latest.setInputValue('hey');
+    });
+    act(() => {
+      harness.latest.handleSend();
+    });
+    act(() => {
+      fake.emitChatEnded({ reason: 'skipped', by: 'self' });
+    });
+    expect(harness.latest.rematchState).toBe('rematching');
+    expect(harness.latest.messages.length).toBeGreaterThan(1);
+
+    act(() => {
+      jest.advanceTimersByTime(10_000); // exhaust the skip-unlock timer from the prior match
+    });
+    act(() => {
+      fake.emitMatchFound();
+    });
+
+    expect(harness.latest.rematchState).toBe('idle');
+    expect(harness.latest.messages).toEqual([
+      { id: expect.any(String), sender: 'system', text: "Connected with anonymous partner. Say Hi!" },
+    ]);
+    expect(harness.latest.replyingTo).toBeNull();
+    expect(harness.latest.canSkip).toBe(false);
+    jest.useRealTimers();
+  });
+
+  it('handleSkip blocks the 4th skip within 8s and shows a transient unavailable message instead of sending', async () => {
+    jest.useFakeTimers();
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      jest.advanceTimersByTime(10_000);
+    });
+
+    act(() => {
+      harness.latest.handleSkip();
+      harness.latest.handleSkip();
+      harness.latest.handleSkip();
+    });
+    expect(fake.sendSkipChat).toHaveBeenCalledTimes(3);
+
+    act(() => {
+      harness.latest.handleSkip();
+    });
+    expect(fake.sendSkipChat).toHaveBeenCalledTimes(3);
+    expect(harness.latest.skipUnavailableMessage).not.toBeNull();
+
+    act(() => {
+      jest.advanceTimersByTime(3_000);
+    });
+    expect(harness.latest.skipUnavailableMessage).toBeNull();
     jest.useRealTimers();
   });
 

@@ -14,6 +14,10 @@ export function createDevNoopChatSocketService(): ChatSocketService {
     sendTypingStop: () => {},
     onPartnerTyping: () => () => {},
     onPartnerTypingStop: () => () => {},
+    sendSkipChat: () => {
+      console.log('[DevChat] sendSkipChat (no-op, nothing is listening)');
+    },
+    onChatEnded: () => () => {},
     disconnect: () => {},
   };
 }

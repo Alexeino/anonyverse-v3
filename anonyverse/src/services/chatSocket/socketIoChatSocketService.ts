@@ -2,6 +2,7 @@ import { io, type Socket } from 'socket.io-client';
 import { env } from '../../config/env';
 import type { ChatSocketService } from './ChatSocketService';
 import type {
+  ChatEndedEvent,
   ChatSocketConnectError,
   ChatSocketConnectErrorReason,
   JoinChatAck,
@@ -65,6 +66,7 @@ export function createSocketIoChatSocketService(): ChatSocketService {
   const receiveMessageHandlers = new Set<(event: ReceiveMessageEvent) => void>();
   const partnerTypingHandlers = new Set<() => void>();
   const partnerTypingStopHandlers = new Set<() => void>();
+  const chatEndedHandlers = new Set<(event: ChatEndedEvent) => void>();
 
   function handleMatchFound(event: MatchFoundEvent) {
     matchFoundHandlers.forEach(handler => handler(event));
@@ -80,6 +82,10 @@ export function createSocketIoChatSocketService(): ChatSocketService {
 
   function handlePartnerTypingStop() {
     partnerTypingStopHandlers.forEach(handler => handler());
+  }
+
+  function handleChatEnded(event: ChatEndedEvent) {
+    chatEndedHandlers.forEach(handler => handler(event));
   }
 
   return {
@@ -111,6 +117,7 @@ export function createSocketIoChatSocketService(): ChatSocketService {
         nextSocket.on('receive_message', handleReceiveMessage);
         nextSocket.on('partner_typing', handlePartnerTyping);
         nextSocket.on('partner_typing_stop', handlePartnerTypingStop);
+        nextSocket.on('chat_ended', handleChatEnded);
 
         let settled = false;
         function settle(run: () => void) {
@@ -204,6 +211,20 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       };
     },
 
+    sendSkipChat() {
+      if (!socket) {
+        return;
+      }
+      socket.emit('skip_chat');
+    },
+
+    onChatEnded(handler) {
+      chatEndedHandlers.add(handler);
+      return () => {
+        chatEndedHandlers.delete(handler);
+      };
+    },
+
     disconnect() {
       if (!socket) {
         return;
@@ -212,6 +233,7 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       socket.off('receive_message', handleReceiveMessage);
       socket.off('partner_typing', handlePartnerTyping);
       socket.off('partner_typing_stop', handlePartnerTypingStop);
+      socket.off('chat_ended', handleChatEnded);
       socket.disconnect();
       socket = null;
     },
