@@ -1,4 +1,4 @@
-import type { JoinChatAck, MatchFoundEvent, ReceiveMessageEvent } from './types';
+import type { ChatEndedEvent, JoinChatAck, MatchFoundEvent, ReceiveMessageEvent } from './types';
 
 
 export interface ChatSocketService {
@@ -21,6 +21,10 @@ export interface ChatSocketService {
   onPartnerTyping(handler: () => void): () => void;
 
   onPartnerTypingStop(handler: () => void): () => void;
+
+  sendSkipChat(): void;
+
+  onChatEnded(handler: (event: ChatEndedEvent) => void): () => void;
 
   disconnect(): void;
 }

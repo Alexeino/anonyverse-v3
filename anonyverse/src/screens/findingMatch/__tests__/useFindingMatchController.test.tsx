@@ -55,6 +55,8 @@ function makeChatSocketService({
     sendTypingStop: () => {},
     onPartnerTyping: () => () => {},
     onPartnerTypingStop: () => () => {},
+    sendSkipChat: () => {},
+    onChatEnded: () => () => {},
     disconnect,
   };
 

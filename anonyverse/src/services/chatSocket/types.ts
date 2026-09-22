@@ -16,6 +16,15 @@ export interface ReceiveMessageEvent {
 }
 
 
+export type ChatEndedReason = 'skipped' | 'ended' | 'disconnected';
+export type ChatEndedBy = 'self' | 'partner';
+
+export interface ChatEndedEvent {
+  reason: ChatEndedReason;
+  by: ChatEndedBy;
+}
+
+
 export type ChatSocketConnectErrorReason =
   | 'AUTH_ERROR'
   | 'MISSING_TOKEN'

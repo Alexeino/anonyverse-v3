@@ -9,6 +9,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { PostHogProvider } from 'posthog-react-native';
 import { useCrossfade } from '../hooks/useCrossfade';
 import { ChatScreen } from '../screens/chat/ChatScreen';
+import { FindingNewMatchModal } from '../screens/chat/FindingNewMatchModal';
 import { ChatListScreen } from '../screens/chatList/ChatListScreen';
 import { DevMenuScreen, type DevMenuEntry } from '../screens/devMenu/DevMenuScreen';
 import { EntryScreen } from '../screens/entry/EntryScreen';
@@ -261,6 +262,20 @@ function DevChatRoute({ route }: NativeStackScreenProps<RootStackParamList, 'Dev
   );
 }
 
+function DevFindingNewMatchModalRoute() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  return (
+    <FindingNewMatchModal
+      mood="good"
+      topic="hobbies"
+      onStopSearching={() => navigation.goBack()}
+      onReport={() => console.log('[DevFindingNewMatchModal] Report tapped — not implemented yet.')}
+    />
+  );
+}
+
 function DevMenuRoute() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -300,6 +315,11 @@ function DevMenuRoute() {
       label: 'Chat',
       description: 'UI preview only — no real partner, sendMessage is a no-op.',
       onPress: () => navigation.navigate('DevChat', undefined),
+    },
+    {
+      label: 'Finding New Match modal',
+      description: 'The skip-mid-chat rematch overlay, shown standalone — "Stop searching" just goes back.',
+      onPress: () => navigation.navigate('DevFindingNewMatchModal'),
     },
     {
       label: 'Chat List',
@@ -363,6 +383,7 @@ export function RootNavigator() {
           <Stack.Screen name="DevTopics" component={DevTopicsRoute} />
           <Stack.Screen name="DevFindingMatch" component={DevFindingMatchRoute} />
           <Stack.Screen name="DevChat" component={DevChatRoute} />
+          <Stack.Screen name="DevFindingNewMatchModal" component={DevFindingNewMatchModalRoute} />
         </>
       ) : null}
     </Stack.Navigator>

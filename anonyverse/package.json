@@ -6,7 +6,8 @@
     "android": "adb reverse tcp:8081 tcp:8081 && react-native run-android",
     "ios": "react-native run-ios",
     "lint": "eslint .",
-    "start": "react-native start",
+    "start": "bash scripts/start-with-adb-reverse.sh",
+    "start:plain": "react-native start",
     "test": "jest"
   },
   "dependencies": {
@@ -14,7 +15,6 @@
     "@react-native/new-app-screen": "0.87.1",
     "@react-navigation/native": "^7.3.18",
     "@react-navigation/native-stack": "^7.18.10",
-    "forge-dispatch": "^0.4.2",
     "posthog-react-native": "^4.75.0",
     "react": "19.2.3",
     "react-native": "0.87.1",

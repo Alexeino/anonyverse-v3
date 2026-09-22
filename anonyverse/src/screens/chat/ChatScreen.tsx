@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Animated,
   Image,
+  LayoutAnimation,
   PanResponder,
   Pressable,
   ScrollView,
@@ -18,8 +19,10 @@ import { colors, fontFamily, radii, spacing, typography } from '../../design/tok
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
 import type { Mood } from '../moodSelect/MoodSelectScreen';
 import { useChatController, type ChatMessage } from './useChatController';
+import { FindingNewMatchModal } from './FindingNewMatchModal';
 
 const miliHappy = require('../../assets/images/mili-happy.png');
+const INTRO_CARD_GAP = 12;
 
 export interface ChatScreenProps {
   chatSocketService: ChatSocketService;
@@ -28,7 +31,7 @@ export interface ChatScreenProps {
   onLeave: () => void;
 }
 
-export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
+export function ChatScreen({ chatSocketService, mood, topic, onLeave }: ChatScreenProps) {
   const {
     messages,
     inputValue,
@@ -36,13 +39,16 @@ export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
     introDismissed,
     handleDismissIntro,
     handleSend,
-    handleLeave,
     skipSecondsRemaining,
     canSkip,
     partnerTyping,
     replyingTo,
     handleReply,
     handleCancelReply,
+    rematchState,
+    skipUnavailableMessage,
+    handleSkip,
+    handleStopSearching,
   } = useChatController(chatSocketService, onLeave);
   const scrollRef = useRef<React.ElementRef<typeof ScrollView>>(null);
   const insets = useSafeAreaInsets();
@@ -50,10 +56,16 @@ export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
   const keyboardGap = 8;
   const keyboardHeight = useKeyboardState(state => (state.isVisible ? state.height : 0));
   const [inputBarHeight, setInputBarHeight] = useState(0);
+  const [introCardHeight, setIntroCardHeight] = useState(0);
   const sendButtonScale = useRef(new Animated.Value(1)).current;
 
   const handleReport = () => {
     console.log('[Chat] Report tapped — not implemented yet.');
+  };
+
+  const handleDismissIntroCard = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    handleDismissIntro();
   };
 
   const handleSendPressIn = () => {
@@ -71,7 +83,7 @@ export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <View style={styles.header}>
           <Pressable
-            onPress={handleLeave}
+            onPress={handleSkip}
             disabled={!canSkip}
             accessibilityRole="button"
             accessibilityLabel={canSkip ? 'Skip this conversation' : `Skip available in ${skipSecondsRemaining}s`}
@@ -99,20 +111,36 @@ export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
           </Pressable>
         </View>
 
-        <ScrollView
-          ref={scrollRef}
-          style={styles.thread}
-          contentContainerStyle={[styles.threadContent, { paddingBottom: 16 + inputBarHeight + keyboardHeight }]}
-          onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
-        >
-          {!introDismissed ? <IntroCard onDismiss={handleDismissIntro} /> : null}
+        <View style={styles.threadArea}>
+          <ScrollView
+            ref={scrollRef}
+            style={styles.thread}
+            contentContainerStyle={[
+              styles.threadContent,
+              {
+                paddingTop: 8 + (!introDismissed ? introCardHeight + INTRO_CARD_GAP : 0),
+                paddingBottom: 16 + inputBarHeight + keyboardHeight,
+              },
+            ]}
+            onContentSizeChange={() => scrollRef.current?.scrollToEnd({ animated: true })}
+          >
+            {messages.map(message => (
+              <MessageBubble key={message.id} message={message} onReply={handleReply} />
+            ))}
 
-          {messages.map(message => (
-            <MessageBubble key={message.id} message={message} onReply={handleReply} />
-          ))}
+            {partnerTyping ? <TypingBubble /> : null}
+          </ScrollView>
 
-          {partnerTyping ? <TypingBubble /> : null}
-        </ScrollView>
+          {!introDismissed ? (
+            <View
+              style={styles.introCardWrap}
+              pointerEvents="box-none"
+              onLayout={event => setIntroCardHeight(event.nativeEvent.layout.height)}
+            >
+              <IntroCard onDismiss={handleDismissIntroCard} />
+            </View>
+          ) : null}
+        </View>
 
         <KeyboardStickyView
           style={[styles.inputBar, { paddingBottom: bottomInset }]}
@@ -167,6 +195,23 @@ export function ChatScreen({ chatSocketService, onLeave }: ChatScreenProps) {
           </View>
         </KeyboardStickyView>
       </SafeAreaView>
+
+      {skipUnavailableMessage ? (
+        <View style={styles.unavailableToastWrap} pointerEvents="none">
+          <View style={styles.unavailableToast}>
+            <Text style={styles.unavailableToastText}>{skipUnavailableMessage}</Text>
+          </View>
+        </View>
+      ) : null}
+
+      {rematchState === 'rematching' ? (
+        <FindingNewMatchModal
+          mood={mood}
+          topic={topic}
+          onStopSearching={handleStopSearching}
+          onReport={handleReport}
+        />
+      ) : null}
     </View>
   );
 }
@@ -421,9 +466,35 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: colors.overlayBackground,
   },
+  unavailableToastWrap: {
+    position: 'absolute',
+    top: 64,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+  },
+  unavailableToast: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: radii.pill,
+    backgroundColor: colors.ink,
+    shadowColor: colors.cardShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 1,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  unavailableToastText: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 13,
+    color: colors.white,
+  },
   reportGlyph: {
     fontSize: 15,
     color: colors.danger,
+  },
+  threadArea: {
+    flex: 1,
   },
   thread: {
     flex: 1,
@@ -433,6 +504,15 @@ const styles = StyleSheet.create({
     paddingTop: 8,
     paddingBottom: 16,
     gap: 10,
+  },
+  introCardWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'transparent',
+    paddingHorizontal: spacing.screenHorizontal,
+    paddingTop: 8,
   },
   introCard: {
     padding: 20,
