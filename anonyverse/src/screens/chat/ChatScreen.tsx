@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Image,
   LayoutAnimation,
@@ -17,21 +18,21 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
 import { colors, fontFamily, radii, spacing, typography } from '../../design/tokens';
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
-import type { Mood } from '../moodSelect/MoodSelectScreen';
+import type { TopicsSelection } from '../topics/TopicsScreen';
 import { useChatController, type ChatMessage } from './useChatController';
 import { FindingNewMatchModal } from './FindingNewMatchModal';
+import { LeaveChatConfirmModal } from './LeaveChatConfirmModal';
 
 const miliHappy = require('../../assets/images/mili-happy.png');
 const INTRO_CARD_GAP = 12;
 
 export interface ChatScreenProps {
   chatSocketService: ChatSocketService;
-  mood: Mood;
-  topic: string | null;
+  selection: TopicsSelection;
   onLeave: () => void;
 }
 
-export function ChatScreen({ chatSocketService, mood, topic, onLeave }: ChatScreenProps) {
+export function ChatScreen({ chatSocketService, selection, onLeave }: ChatScreenProps) {
   const {
     messages,
     inputValue,
@@ -46,10 +47,34 @@ export function ChatScreen({ chatSocketService, mood, topic, onLeave }: ChatScre
     handleReply,
     handleCancelReply,
     rematchState,
+    rematchReason,
     skipUnavailableMessage,
     handleSkip,
     handleStopSearching,
-  } = useChatController(chatSocketService, onLeave);
+    rematchStatusMessage,
+    rematchGaveUp,
+    connectionLost,
+    showLeaveConfirm,
+    handleRequestLeave,
+    handleDismissLeaveConfirm,
+    handleConfirmLeave,
+  } = useChatController(chatSocketService, selection, onLeave);
+
+  useEffect(() => {
+    if (!connectionLost) {
+      return;
+    }
+    Alert.alert(
+      'Connection lost',
+      "You've been disconnected from the chat. Check your connection and start a new chat.",
+      [{ text: 'OK', onPress: handleStopSearching }],
+      { cancelable: false },
+    );
+  }, [connectionLost, handleStopSearching]);
+
+  const handleSavePartnerPlaceholder = () => {
+    Alert.alert('Coming soon', 'Saving a partner to chat again later will be available soon.');
+  };
   const scrollRef = useRef<React.ElementRef<typeof ScrollView>>(null);
   const insets = useSafeAreaInsets();
   const bottomInset = Math.max(insets.bottom, 12);
@@ -101,14 +126,25 @@ export function ChatScreen({ chatSocketService, mood, topic, onLeave }: ChatScre
             <Text style={styles.strangerLabel}>STRANGER</Text>
           </View>
 
-          <Pressable
-            onPress={handleReport}
-            accessibilityRole="button"
-            accessibilityLabel="Report this user"
-            style={({ pressed }) => [styles.reportButton, pressed && styles.pressed]}
-          >
-            <Text style={styles.reportGlyph}>{'⚑'}</Text>
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              onPress={handleReport}
+              accessibilityRole="button"
+              accessibilityLabel="Report this user"
+              style={({ pressed }) => [styles.reportButton, pressed && styles.pressed]}
+            >
+              <Text style={styles.reportGlyph}>{'⚑'}</Text>
+            </Pressable>
+
+            <Pressable
+              onPress={handleRequestLeave}
+              accessibilityRole="button"
+              accessibilityLabel="Leave chat"
+              style={({ pressed }) => [styles.reportButton, pressed && styles.pressed]}
+            >
+              <Text style={styles.leaveGlyph}>{'✕'}</Text>
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.threadArea}>
@@ -206,10 +242,19 @@ export function ChatScreen({ chatSocketService, mood, topic, onLeave }: ChatScre
 
       {rematchState === 'rematching' ? (
         <FindingNewMatchModal
-          mood={mood}
-          topic={topic}
+          reason={rematchReason}
+          statusMessage={rematchStatusMessage}
+          statusIsError={rematchGaveUp}
           onStopSearching={handleStopSearching}
           onReport={handleReport}
+        />
+      ) : null}
+
+      {showLeaveConfirm ? (
+        <LeaveChatConfirmModal
+          onDismiss={handleDismissLeaveConfirm}
+          onSavePartner={handleSavePartnerPlaceholder}
+          onLeaveChat={handleConfirmLeave}
         />
       ) : null}
     </View>
@@ -458,6 +503,11 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     color: colors.ink,
   },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   reportButton: {
     width: 36,
     height: 36,
@@ -492,6 +542,11 @@ const styles = StyleSheet.create({
   reportGlyph: {
     fontSize: 15,
     color: colors.danger,
+  },
+  leaveGlyph: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 15,
+    color: colors.ink,
   },
   threadArea: {
     flex: 1,

@@ -11,6 +11,14 @@ export interface MascotPairProps {
   /** Radial glow behind the pair — [innerColor, outerColor] with alpha baked in, or omit for none. */
   glow?: { colors: readonly [string, string]; opacity: number };
   height: number;
+  /**
+   * Width of the mascot-pair box itself, centered within its parent. The
+   * per-mascot `left`/`top` offsets are authored relative to this box, not
+   * to the parent — omitting it (full `100%` width) is what causes the
+   * pair to drift toward the parent's left edge instead of framing the
+   * "searching" ring, which is centered independently at a narrower width.
+   */
+  pairWidth?: number;
 }
 
 /**
@@ -26,9 +34,16 @@ export function MascotPair({
   rightLayout,
   glow,
   height,
+  pairWidth,
 }: MascotPairProps) {
   return (
-    <View style={[styles.container, { height }]}>
+    <View
+      style={[
+        styles.container,
+        { height },
+        pairWidth ? { width: pairWidth, alignSelf: 'center' } : null,
+      ]}
+    >
       {glow ? (
         <Svg
           width="100%"

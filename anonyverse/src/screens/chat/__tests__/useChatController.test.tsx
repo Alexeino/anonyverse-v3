@@ -1,8 +1,43 @@
 import React from 'react';
+import { BackHandler } from 'react-native';
 import ReactTestRenderer, { act } from 'react-test-renderer';
 import type { ChatSocketService } from '../../../services/chatSocket/ChatSocketService';
-import type { ChatEndedEvent, MatchFoundEvent, ReceiveMessageEvent } from '../../../services/chatSocket/types';
+import type {
+  ChatEndedEvent,
+  JoinChatAck,
+  MatchFoundEvent,
+  ReceiveMessageEvent,
+  ServerErrorEvent,
+} from '../../../services/chatSocket/types';
+import type { TopicsSelection } from '../../topics/TopicsScreen';
 import { useChatController } from '../useChatController';
+
+const TEST_SELECTION: TopicsSelection = { mood: 'good', tags: ['life'], optedIn: false };
+
+// Jest's RN preset defaults to the iOS platform file for BackHandler, whose
+// addEventListener is a total no-op (no hardware back button on iOS) — it
+// never stores the handler anywhere, so the real module can't be used to
+// simulate a back press. Spy on the real object in place instead of
+// replacing the module: capture the handler each addEventListener call
+// receives and invoke it directly to simulate a press.
+type BackPressHandler = () => boolean | undefined | void;
+
+beforeEach(() => {
+  jest.spyOn(BackHandler, 'addEventListener').mockImplementation(() => ({ remove: () => {} }));
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
+function pressHardwareBack(): boolean {
+  const spy = BackHandler.addEventListener as jest.Mock;
+  const lastCall = spy.mock.calls.at(-1) as [string, BackPressHandler] | undefined;
+  if (!lastCall) {
+    throw new Error('No hardwareBackPress listener is currently registered.');
+  }
+  return Boolean(lastCall[1]());
+}
 
 function makeChatSocketService() {
   const receiveHandlers = new Set<(event: ReceiveMessageEvent) => void>();
@@ -10,15 +45,19 @@ function makeChatSocketService() {
   const partnerTypingStopHandlers = new Set<() => void>();
   const matchFoundHandlers = new Set<(event: MatchFoundEvent) => void>();
   const chatEndedHandlers = new Set<(event: ChatEndedEvent) => void>();
+  const serverErrorHandlers = new Set<(event: ServerErrorEvent) => void>();
+  const connectionLostHandlers = new Set<() => void>();
   const sendMessage = jest.fn();
   const sendTyping = jest.fn();
   const sendTypingStop = jest.fn();
   const sendSkipChat = jest.fn();
+  const sendEndChat = jest.fn();
   const disconnect = jest.fn();
+  const joinChat = jest.fn((): Promise<JoinChatAck> => Promise.resolve({ ok: true, status: 'matched' }));
 
   const service: ChatSocketService = {
     connect: jest.fn(() => Promise.resolve()),
-    joinChat: jest.fn(() => Promise.resolve({ ok: true, status: 'matched' as const })),
+    joinChat,
     onMatchFound: handler => {
       matchFoundHandlers.add(handler);
       return () => matchFoundHandlers.delete(handler);
@@ -39,9 +78,18 @@ function makeChatSocketService() {
       return () => partnerTypingStopHandlers.delete(handler);
     },
     sendSkipChat,
+    sendEndChat,
     onChatEnded: handler => {
       chatEndedHandlers.add(handler);
       return () => chatEndedHandlers.delete(handler);
+    },
+    onServerError: handler => {
+      serverErrorHandlers.add(handler);
+      return () => serverErrorHandlers.delete(handler);
+    },
+    onConnectionLost: handler => {
+      connectionLostHandlers.add(handler);
+      return () => connectionLostHandlers.delete(handler);
     },
     disconnect,
   };
@@ -52,13 +100,17 @@ function makeChatSocketService() {
     sendTyping,
     sendTypingStop,
     sendSkipChat,
+    sendEndChat,
     disconnect,
+    joinChat,
     emitReceiveMessage: (event: ReceiveMessageEvent) => receiveHandlers.forEach(handler => handler(event)),
     emitPartnerTyping: () => partnerTypingHandlers.forEach(handler => handler()),
     emitPartnerTypingStop: () => partnerTypingStopHandlers.forEach(handler => handler()),
     emitMatchFound: (event: MatchFoundEvent = { partner: 'partner-2' }) =>
       matchFoundHandlers.forEach(handler => handler(event)),
     emitChatEnded: (event: ChatEndedEvent) => chatEndedHandlers.forEach(handler => handler(event)),
+    emitServerError: (event: ServerErrorEvent) => serverErrorHandlers.forEach(handler => handler(event)),
+    emitConnectionLost: () => connectionLostHandlers.forEach(handler => handler()),
   };
 }
 
@@ -71,7 +123,7 @@ function Harness({
   onLeave: () => void;
   onReady: (result: ReturnType<typeof useChatController>) => void;
 }) {
-  const result = useChatController(service, onLeave);
+  const result = useChatController(service, TEST_SELECTION, onLeave);
   onReady(result);
   return null;
 }
@@ -227,6 +279,118 @@ describe('useChatController', () => {
     expect(harness.latest.rematchState).toBe('rematching');
   });
 
+  it.each(['ended', 'disconnected'] as const)(
+    'chat_ended with reason "%s" and by "partner" sets rematching and re-joins the queue',
+    async reason => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        fake.emitChatEnded({ reason, by: 'partner' });
+      });
+
+      expect(harness.latest.rematchState).toBe('rematching');
+      expect(fake.joinChat).toHaveBeenCalledWith(TEST_SELECTION.tags, TEST_SELECTION.mood, TEST_SELECTION.optedIn);
+    },
+  );
+
+  it.each(['ended', 'disconnected'] as const)(
+    'chat_ended with reason "%s" and by "self" does not re-join (this client is the one leaving)',
+    async reason => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        fake.emitChatEnded({ reason, by: 'self' });
+      });
+
+      expect(harness.latest.rematchState).toBe('idle');
+      expect(fake.joinChat).not.toHaveBeenCalled();
+    },
+  );
+
+  it('pressing hardware back during an active chat opens the leave-confirm popup instead of leaving', async () => {
+    const harness = await render(makeChatSocketService().service);
+
+    expect(harness.latest.showLeaveConfirm).toBe(false);
+
+    let handled!: boolean;
+    act(() => {
+      handled = pressHardwareBack();
+    });
+
+    expect(handled).toBe(true);
+    expect(harness.latest.showLeaveConfirm).toBe(true);
+    expect(harness.onLeave).not.toHaveBeenCalled();
+  });
+
+  it('pressing hardware back again while the leave-confirm popup is open dismisses it', async () => {
+    const harness = await render(makeChatSocketService().service);
+
+    act(() => {
+      pressHardwareBack();
+    });
+    expect(harness.latest.showLeaveConfirm).toBe(true);
+
+    act(() => {
+      pressHardwareBack();
+    });
+    expect(harness.latest.showLeaveConfirm).toBe(false);
+  });
+
+  it('handleDismissLeaveConfirm closes the popup without leaving', async () => {
+    const harness = await render(makeChatSocketService().service);
+
+    act(() => {
+      pressHardwareBack();
+    });
+    expect(harness.latest.showLeaveConfirm).toBe(true);
+
+    act(() => {
+      harness.latest.handleDismissLeaveConfirm();
+    });
+
+    expect(harness.latest.showLeaveConfirm).toBe(false);
+    expect(harness.onLeave).not.toHaveBeenCalled();
+  });
+
+  it('handleConfirmLeave sends end_chat, disconnects, closes the popup, and calls onLeave', async () => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      pressHardwareBack();
+    });
+    expect(harness.latest.showLeaveConfirm).toBe(true);
+
+    act(() => {
+      harness.latest.handleConfirmLeave();
+    });
+
+    expect(fake.sendEndChat).toHaveBeenCalledTimes(1);
+    expect(fake.disconnect).toHaveBeenCalled();
+    expect(harness.latest.showLeaveConfirm).toBe(false);
+    expect(harness.onLeave).toHaveBeenCalledTimes(1);
+  });
+
+  it('pressing hardware back while rematching stops searching (same as the "Stop searching" button) instead of opening the leave-confirm popup', async () => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      fake.emitChatEnded({ reason: 'skipped', by: 'self' });
+    });
+    expect(harness.latest.rematchState).toBe('rematching');
+
+    act(() => {
+      pressHardwareBack();
+    });
+
+    expect(fake.disconnect).toHaveBeenCalled();
+    expect(harness.onLeave).toHaveBeenCalledTimes(1);
+    expect(harness.latest.showLeaveConfirm).toBe(false);
+  });
+
   it('match_found while already chatting resets the thread and clears rematchState', async () => {
     jest.useFakeTimers();
     const fake = makeChatSocketService();
@@ -260,7 +424,7 @@ describe('useChatController', () => {
     jest.useRealTimers();
   });
 
-  it('handleSkip blocks the 4th skip within 8s and shows a transient unavailable message instead of sending', async () => {
+  it('handleSkip blocks a 4th skip once the 3-skip bucket is empty and shows a transient unavailable message instead of sending', async () => {
     jest.useFakeTimers();
     const fake = makeChatSocketService();
     const harness = await render(fake.service);
@@ -287,6 +451,236 @@ describe('useChatController', () => {
     });
     expect(harness.latest.skipUnavailableMessage).toBeNull();
     jest.useRealTimers();
+  });
+
+  it('handleSkip allows another skip once the bucket refills (~30s per skip, matching the server)', async () => {
+    jest.useFakeTimers();
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      jest.advanceTimersByTime(10_000);
+    });
+    act(() => {
+      harness.latest.handleSkip();
+      harness.latest.handleSkip();
+      harness.latest.handleSkip();
+    });
+
+    act(() => {
+      jest.advanceTimersByTime(20_000);
+      harness.latest.handleSkip();
+    });
+    expect(fake.sendSkipChat).toHaveBeenCalledTimes(3);
+
+    act(() => {
+      jest.advanceTimersByTime(11_000);
+      harness.latest.handleSkip();
+    });
+    expect(fake.sendSkipChat).toHaveBeenCalledTimes(4);
+    jest.useRealTimers();
+  });
+
+  it('a server rate_limited error shows the transient toast', async () => {
+    jest.useFakeTimers();
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      fake.emitServerError({ code: 429, reason: 'rate_limited' });
+    });
+    expect(harness.latest.skipUnavailableMessage).not.toBeNull();
+
+    act(() => {
+      jest.advanceTimersByTime(3_000);
+    });
+    expect(harness.latest.skipUnavailableMessage).toBeNull();
+    jest.useRealTimers();
+  });
+
+  it('re-joining after the partner left retries a rate_limited join_chat, then clears the status on success', async () => {
+    jest.useFakeTimers();
+    const fake = makeChatSocketService();
+    fake.joinChat.mockResolvedValueOnce({ ok: false, status: 'rate_limited' });
+    const harness = await render(fake.service);
+
+    await act(async () => {
+      fake.emitChatEnded({ reason: 'ended', by: 'partner' });
+    });
+    expect(fake.joinChat).toHaveBeenCalledTimes(1);
+    expect(harness.latest.rematchStatusMessage).not.toBeNull();
+
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+    });
+    expect(fake.joinChat).toHaveBeenCalledTimes(2);
+    expect(harness.latest.rematchStatusMessage).toBeNull();
+    expect(harness.latest.rematchState).toBe('rematching');
+    jest.useRealTimers();
+  });
+
+  it('a join_chat ack that arrives after a new match_found does not trigger another re-join', async () => {
+    jest.useFakeTimers();
+    const fake = makeChatSocketService();
+    let resolveJoin!: (ack: JoinChatAck) => void;
+    fake.joinChat.mockImplementationOnce(() => new Promise<JoinChatAck>(resolve => (resolveJoin = resolve)));
+    const harness = await render(fake.service);
+
+    await act(async () => {
+      fake.emitChatEnded({ reason: 'ended', by: 'partner' });
+    });
+    act(() => {
+      fake.emitMatchFound();
+    });
+    await act(async () => {
+      resolveJoin({ ok: false, status: 'rate_limited' });
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+    });
+
+    expect(fake.joinChat).toHaveBeenCalledTimes(1);
+    expect(harness.latest.rematchStatusMessage).toBeNull();
+    jest.useRealTimers();
+  });
+
+  it('re-joining gives up with a status message after repeated join_chat failures', async () => {
+    jest.useFakeTimers();
+    const fake = makeChatSocketService();
+    fake.joinChat.mockRejectedValue({ reason: 'UNKNOWN_ERROR' });
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const harness = await render(fake.service);
+
+    await act(async () => {
+      fake.emitChatEnded({ reason: 'disconnected', by: 'partner' });
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+    });
+
+    expect(fake.joinChat).toHaveBeenCalledTimes(3);
+    expect(harness.latest.rematchStatusMessage).toMatch(/Couldn't find a new match/);
+    jest.useRealTimers();
+  });
+
+  it.each([
+    [{ reason: 'skipped', by: 'self' }, 'you_skipped'],
+    [{ reason: 'skipped', by: 'partner' }, 'partner_skipped'],
+    [{ reason: 'ended', by: 'partner' }, 'partner_ended'],
+    [{ reason: 'disconnected', by: 'partner' }, 'partner_ended'],
+  ] as const)('chat_ended %o sets rematchReason to "%s"', async (event, expected) => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      fake.emitChatEnded(event);
+    });
+
+    expect(harness.latest.rematchReason).toBe(expected);
+  });
+
+  it('match_found clears rematchReason', async () => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
+    });
+    act(() => {
+      fake.emitMatchFound();
+    });
+
+    expect(harness.latest.rematchReason).toBeNull();
+  });
+
+  it('handleRequestLeave opens the leave-confirm popup (the header button, for iOS)', async () => {
+    const harness = await render(makeChatSocketService().service);
+
+    act(() => {
+      harness.latest.handleRequestLeave();
+    });
+
+    expect(harness.latest.showLeaveConfirm).toBe(true);
+  });
+
+  it.each([
+    { reason: 'skipped', by: 'partner' },
+    { reason: 'ended', by: 'partner' },
+  ] as const)('chat_ended ($reason by $by) closes an open leave-confirm popup', async event => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      harness.latest.handleRequestLeave();
+    });
+    act(() => {
+      fake.emitChatEnded(event);
+    });
+
+    expect(harness.latest.showLeaveConfirm).toBe(false);
+  });
+
+  it('a rate_limited error while rematching does not show the (hidden) toast', async () => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
+    });
+    act(() => {
+      fake.emitServerError({ code: 429, reason: 'rate_limited' });
+    });
+
+    expect(harness.latest.skipUnavailableMessage).toBeNull();
+  });
+
+  it('re-join status is neutral while retrying and only flagged as an error once it gives up', async () => {
+    jest.useFakeTimers();
+    const fake = makeChatSocketService();
+    fake.joinChat.mockResolvedValue({ ok: false, status: 'rate_limited' });
+    const harness = await render(fake.service);
+
+    await act(async () => {
+      fake.emitChatEnded({ reason: 'ended', by: 'partner' });
+    });
+    expect(harness.latest.rematchStatusMessage).not.toBeNull();
+    expect(harness.latest.rematchGaveUp).toBe(false);
+
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+    });
+    await act(async () => {
+      jest.advanceTimersByTime(15_000);
+    });
+    expect(harness.latest.rematchGaveUp).toBe(true);
+    jest.useRealTimers();
+  });
+
+  it('a lost connection sets connectionLost, closes the leave popup, and hardware back then leaves', async () => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      harness.latest.handleRequestLeave();
+    });
+    act(() => {
+      fake.emitConnectionLost();
+    });
+
+    expect(harness.latest.connectionLost).toBe(true);
+    expect(harness.latest.showLeaveConfirm).toBe(false);
+
+    act(() => {
+      pressHardwareBack();
+    });
+    expect(fake.disconnect).toHaveBeenCalled();
+    expect(harness.onLeave).toHaveBeenCalledTimes(1);
   });
 
   it('unmounting disconnects the socket', async () => {

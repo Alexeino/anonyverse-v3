@@ -108,11 +108,10 @@ function VerificationRoute() {
 
   return (
     <Animated.View style={[styles.crossfade, { opacity }]}>
-      {displayStep === 'chat' && chatHandoff && mood ? (
+      {displayStep === 'chat' && chatHandoff && selection ? (
         <ChatScreen
           chatSocketService={chatHandoff.service}
-          mood={mood}
-          topic={selection?.tags[0] ?? null}
+          selection={selection}
           onLeave={handleLeaveChat}
         />
       ) : displayStep === 'finding_match' && selection ? (
@@ -196,11 +195,10 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
 
   return (
     <Animated.View style={[styles.crossfade, { opacity }]}>
-      {displayStep === 'chat' && chatHandoff && mood ? (
+      {displayStep === 'chat' && chatHandoff && selection ? (
         <ChatScreen
           chatSocketService={chatHandoff.service}
-          mood={mood}
-          topic={selection?.tags[0] ?? null}
+          selection={selection}
           onLeave={handleLeaveChat}
         />
       ) : displayStep === 'finding_match' && selection ? (
@@ -251,12 +249,13 @@ function DevChatRoute({ route }: NativeStackScreenProps<RootStackParamList, 'Dev
   }
 
   const params = route.params;
+  const mood = params?.mood ?? 'good';
+  const topic = params?.topic ?? 'hobbies';
 
   return (
     <ChatScreen
       chatSocketService={params?.service ?? fallbackServiceRef.current}
-      mood={params?.mood ?? 'good'}
-      topic={params?.topic ?? 'hobbies'}
+      selection={{ mood, tags: topic ? [topic] : [], optedIn: false }}
       onLeave={() => navigation.navigate('DevMenu')}
     />
   );
@@ -268,8 +267,7 @@ function DevFindingNewMatchModalRoute() {
 
   return (
     <FindingNewMatchModal
-      mood="good"
-      topic="hobbies"
+      reason="partner_skipped"
       onStopSearching={() => navigation.goBack()}
       onReport={() => console.log('[DevFindingNewMatchModal] Report tapped — not implemented yet.')}
     />

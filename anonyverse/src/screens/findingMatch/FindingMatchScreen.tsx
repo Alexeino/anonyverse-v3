@@ -19,6 +19,7 @@ const miloExcited = require('../../assets/images/milo-excited.png');
 const RING_SIZE = 220;
 const GLOW_SIZE = 150;
 const MASCOT_AREA_HEIGHT = RING_SIZE + 60;
+const PAIR_WIDTH = 272;
 const GLOW_COLOR = 'rgba(242,165,224,0.34)';
 const GLOW_COLOR_TRANSPARENT = 'rgba(242,165,224,0)';
 
@@ -79,6 +80,7 @@ export function FindingMatchScreen({ selection, onClose, onMatched }: FindingMat
 
             <MascotPair
               height={MASCOT_AREA_HEIGHT}
+              pairWidth={PAIR_WIDTH}
               leftImage={miliLookingOut}
               rightImage={miloExcited}
               leftLayout={{ left: 8, top: 20, width: 110, height: 131 }}
