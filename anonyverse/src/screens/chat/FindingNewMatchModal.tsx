@@ -1,12 +1,12 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { BlurView } from '@react-native-community/blur';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
-import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
 import { MascotPair } from '../../components/MascotPair/MascotPair';
 import { colors, fontFamily, radii, spacing, typography } from '../../design/tokens';
 import { rgbaAlpha } from '../../design/svgColor';
-import type { Mood } from '../moodSelect/MoodSelectScreen';
+import type { RematchReason } from './useChatController';
 
 const miliLookingOut = require('../../assets/images/mili-looking-out.png');
 const miloExcited = require('../../assets/images/milo-excited.png');
@@ -14,30 +14,42 @@ const miloExcited = require('../../assets/images/milo-excited.png');
 const RING_SIZE = 160;
 const GLOW_SIZE = 110;
 const MASCOT_AREA_HEIGHT = RING_SIZE + 44;
+const PAIR_WIDTH = 194;
 const GLOW_COLOR = 'rgba(242,165,224,0.34)';
 const GLOW_COLOR_TRANSPARENT = 'rgba(242,165,224,0)';
 
-const MOOD_LABEL: Record<Mood, string> = {
-  good: 'feeling good',
-  low: 'feeling low',
+const REASON_SUBTITLE: Record<RematchReason, string> = {
+  you_skipped: 'You skipped the chat, finding a new one',
+  partner_skipped: 'Your partner skipped you, looking for a new one',
+  partner_ended: 'Your partner has ended the chat, finding a new partner',
 };
+const DEFAULT_SUBTITLE = 'Looking for a new partner';
 
 export interface FindingNewMatchModalProps {
-  mood: Mood;
-  topic: string | null;
+  /** Why this rematch started; null falls back to a generic subtext. */
+  reason: RematchReason | null;
+  /** Shown under the subtitle when re-joining the queue is throttled or has given up. */
+  statusMessage?: string | null;
+  /** Styles statusMessage as an error; a "retrying" status stays neutral. */
+  statusIsError?: boolean;
   onStopSearching: () => void;
   onReport: () => void;
 }
 
-export function FindingNewMatchModal({ mood, topic, onStopSearching, onReport }: FindingNewMatchModalProps) {
-  const subtitle = topic ? `Still matching on ${topic} · ${MOOD_LABEL[mood]}` : `Still matching on ${MOOD_LABEL[mood]}`;
+export function FindingNewMatchModal({ reason, statusMessage, statusIsError, onStopSearching, onReport }: FindingNewMatchModalProps) {
+  const subtitle = reason ? REASON_SUBTITLE[reason] : DEFAULT_SUBTITLE;
 
   return (
     <View style={styles.root}>
-      <BackgroundGradient />
+      <BlurView
+        style={StyleSheet.absoluteFill}
+        blurType="light"
+        blurAmount={18}
+        reducedTransparencyFallbackColor={colors.gradientBackground[0]}
+      />
 
       <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
-        <Text style={styles.breadcrumb}>Skipped — finding new match</Text>
+        <Text style={styles.breadcrumb}>Finding you a new match</Text>
 
         <View style={styles.spacer} />
 
@@ -61,6 +73,7 @@ export function FindingNewMatchModal({ mood, topic, onStopSearching, onReport }:
 
             <MascotPair
               height={MASCOT_AREA_HEIGHT}
+              pairWidth={PAIR_WIDTH}
               leftImage={miliLookingOut}
               rightImage={miloExcited}
               leftLayout={{ left: 4, top: 12, width: 80, height: 95 }}
@@ -73,7 +86,14 @@ export function FindingNewMatchModal({ mood, topic, onStopSearching, onReport }:
           </View>
 
           <Text style={styles.title}>{'Finding you\nsomeone new'}</Text>
-          <Text style={styles.subtitle}>{subtitle}</Text>
+          <Text style={styles.subtitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+            {subtitle}
+          </Text>
+          {statusMessage ? (
+            <Text style={[styles.statusMessage, statusIsError && styles.statusMessageError]} accessibilityLiveRegion="polite">
+              {statusMessage}
+            </Text>
+          ) : null}
 
           <SearchingDots />
 
@@ -220,8 +240,19 @@ const styles = StyleSheet.create({
     marginTop: 8,
     textAlign: 'center',
     fontFamily: fontFamily.medium,
+    fontSize: 11,
+    alignSelf: 'stretch',
+    color: colors.body,
+  },
+  statusMessage: {
+    marginTop: 8,
+    textAlign: 'center',
+    fontFamily: fontFamily.semiBold,
     fontSize: 13,
     color: colors.body,
+  },
+  statusMessageError: {
+    color: colors.danger,
   },
   dotsRow: {
     flexDirection: 'row',

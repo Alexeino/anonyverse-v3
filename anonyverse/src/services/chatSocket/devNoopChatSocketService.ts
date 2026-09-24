@@ -17,7 +17,12 @@ export function createDevNoopChatSocketService(): ChatSocketService {
     sendSkipChat: () => {
       console.log('[DevChat] sendSkipChat (no-op, nothing is listening)');
     },
+    sendEndChat: () => {
+      console.log('[DevChat] sendEndChat (no-op, nothing is listening)');
+    },
     onChatEnded: () => () => {},
+    onServerError: () => () => {},
+    onConnectionLost: () => () => {},
     disconnect: () => {},
   };
 }

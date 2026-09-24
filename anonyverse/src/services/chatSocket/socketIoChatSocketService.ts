@@ -8,10 +8,20 @@ import type {
   JoinChatAck,
   MatchFoundEvent,
   ReceiveMessageEvent,
+  ServerErrorEvent,
 } from './types';
 
 const CONNECTION_TIMEOUT_MS = 10_000;
 const JOIN_CHAT_TIMEOUT_MS = 10_000;
+
+/**
+ * The backend's join_chat only recognises `"fl"` as the low mood (it sets the
+ * require-opt-in flag for `mood == "fl"`), while the app models it as `'low'`.
+ * Anything else is treated as a normal mood, so other values pass through.
+ */
+export function toBackendMood(mood: string): string {
+  return mood === 'low' ? 'fl' : mood;
+}
 
 function joinChatOnSocket(
   activeSocket: Socket,
@@ -67,6 +77,8 @@ export function createSocketIoChatSocketService(): ChatSocketService {
   const partnerTypingHandlers = new Set<() => void>();
   const partnerTypingStopHandlers = new Set<() => void>();
   const chatEndedHandlers = new Set<(event: ChatEndedEvent) => void>();
+  const serverErrorHandlers = new Set<(event: ServerErrorEvent) => void>();
+  const connectionLostHandlers = new Set<() => void>();
 
   function handleMatchFound(event: MatchFoundEvent) {
     matchFoundHandlers.forEach(handler => handler(event));
@@ -86,6 +98,19 @@ export function createSocketIoChatSocketService(): ChatSocketService {
 
   function handleChatEnded(event: ChatEndedEvent) {
     chatEndedHandlers.forEach(handler => handler(event));
+  }
+
+  function handleServerError(event: ServerErrorEvent) {
+    serverErrorHandlers.forEach(handler => handler(event));
+  }
+
+  function handleSocketDisconnect(reason: Socket.DisconnectReason) {
+    // Our own disconnect() detaches this listener first; this also covers the
+    // connect-timeout path, which disconnects before `connect` ever fired.
+    if (reason === 'io client disconnect') {
+      return;
+    }
+    connectionLostHandlers.forEach(handler => handler());
   }
 
   return {
@@ -118,6 +143,8 @@ export function createSocketIoChatSocketService(): ChatSocketService {
         nextSocket.on('partner_typing', handlePartnerTyping);
         nextSocket.on('partner_typing_stop', handlePartnerTypingStop);
         nextSocket.on('chat_ended', handleChatEnded);
+        nextSocket.on('error', handleServerError);
+        nextSocket.on('disconnect', handleSocketDisconnect);
 
         let settled = false;
         function settle(run: () => void) {
@@ -159,7 +186,7 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       if (!socket) {
         return Promise.reject<JoinChatAck>({ reason: 'UNKNOWN_ERROR' });
       }
-      return joinChatOnSocket(socket, tags, mood, optedIn);
+      return joinChatOnSocket(socket, tags, toBackendMood(mood), optedIn);
     },
 
     onMatchFound(handler) {
@@ -218,10 +245,31 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       socket.emit('skip_chat');
     },
 
+    sendEndChat() {
+      if (!socket) {
+        return;
+      }
+      socket.emit('end_chat');
+    },
+
     onChatEnded(handler) {
       chatEndedHandlers.add(handler);
       return () => {
         chatEndedHandlers.delete(handler);
+      };
+    },
+
+    onServerError(handler) {
+      serverErrorHandlers.add(handler);
+      return () => {
+        serverErrorHandlers.delete(handler);
+      };
+    },
+
+    onConnectionLost(handler) {
+      connectionLostHandlers.add(handler);
+      return () => {
+        connectionLostHandlers.delete(handler);
       };
     },
 
@@ -234,6 +282,8 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       socket.off('partner_typing', handlePartnerTyping);
       socket.off('partner_typing_stop', handlePartnerTypingStop);
       socket.off('chat_ended', handleChatEnded);
+      socket.off('error', handleServerError);
+      socket.off('disconnect', handleSocketDisconnect);
       socket.disconnect();
       socket = null;
     },
