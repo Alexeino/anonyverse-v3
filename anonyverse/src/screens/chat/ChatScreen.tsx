@@ -3,6 +3,7 @@ import {
   Alert,
   Animated,
   Image,
+  Keyboard,
   LayoutAnimation,
   PanResponder,
   Pressable,
@@ -18,8 +19,9 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
 import { colors, fontFamily, radii, spacing, typography } from '../../design/tokens';
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
+import { tokenProvider } from '../../services/session/tokenProvider';
 import type { TopicsSelection } from '../topics/TopicsScreen';
-import { useChatController, type ChatMessage } from './useChatController';
+import { MAX_INPUT_LENGTH, useChatController, type ChatMessage } from './useChatController';
 import { FindingNewMatchModal } from './FindingNewMatchModal';
 import { LeaveChatConfirmModal } from './LeaveChatConfirmModal';
 
@@ -28,11 +30,14 @@ const INTRO_CARD_GAP = 12;
 
 export interface ChatScreenProps {
   chatSocketService: ChatSocketService;
+  /** What the user searched with — reused for every rejoin after the partner leaves or a reconnect. */
   selection: TopicsSelection;
   onLeave: () => void;
+  /** The session expired and couldn't be refreshed — the app must go back through Entry. */
+  onReauthRequired: () => void;
 }
 
-export function ChatScreen({ chatSocketService, selection, onLeave }: ChatScreenProps) {
+export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequired }: ChatScreenProps) {
   const {
     messages,
     inputValue,
@@ -53,24 +58,11 @@ export function ChatScreen({ chatSocketService, selection, onLeave }: ChatScreen
     handleStopSearching,
     rematchStatusMessage,
     rematchGaveUp,
-    connectionLost,
     showLeaveConfirm,
     handleRequestLeave,
     handleDismissLeaveConfirm,
     handleConfirmLeave,
-  } = useChatController(chatSocketService, selection, onLeave);
-
-  useEffect(() => {
-    if (!connectionLost) {
-      return;
-    }
-    Alert.alert(
-      'Connection lost',
-      "You've been disconnected from the chat. Check your connection and start a new chat.",
-      [{ text: 'OK', onPress: handleStopSearching }],
-      { cancelable: false },
-    );
-  }, [connectionLost, handleStopSearching]);
+  } = useChatController(chatSocketService, selection, tokenProvider, onLeave, onReauthRequired);
 
   const handleSavePartnerPlaceholder = () => {
     Alert.alert('Coming soon', 'Saving a partner to chat again later will be available soon.');
@@ -83,6 +75,14 @@ export function ChatScreen({ chatSocketService, selection, onLeave }: ChatScreen
   const [inputBarHeight, setInputBarHeight] = useState(0);
   const [introCardHeight, setIntroCardHeight] = useState(0);
   const sendButtonScale = useRef(new Animated.Value(1)).current;
+
+  // The rematch and leave overlays are plain Views drawn over the chat, so the
+  // input underneath stays focused and the keyboard would stay up on a device.
+  useEffect(() => {
+    if (rematchState === 'rematching' || showLeaveConfirm) {
+      Keyboard.dismiss();
+    }
+  }, [rematchState, showLeaveConfirm]);
 
   const handleReport = () => {
     console.log('[Chat] Report tapped — not implemented yet.');
@@ -213,6 +213,7 @@ export function ChatScreen({ chatSocketService, selection, onLeave }: ChatScreen
               placeholderTextColor={colors.inkMuted}
               style={styles.input}
               multiline
+              maxLength={MAX_INPUT_LENGTH}
               textAlignVertical="center"
               onSubmitEditing={handleSend}
             />

@@ -8,26 +8,34 @@ import type { SessionStore } from './SessionStore';
  * re-derives it via Entry's get-started call or a fresh Verification).
  */
 let currentToken: AuthToken | null = null;
-// access_token_expiry is a duration in seconds from issuance (OAuth-style
-// expires_in), not an absolute timestamp — so the issuance time has to be
+// The *_expiry fields are durations in seconds from issuance (OAuth-style
+// expires_in), not absolute timestamps — so the issuance time has to be
 // captured alongside the token to know when it actually goes stale.
 let issuedAtMs: number | null = null;
 
+function expiresWithin(expirySeconds: number, marginMs: number): boolean {
+  if (issuedAtMs === null) {
+    return true;
+  }
+  return Date.now() + marginMs >= issuedAtMs + expirySeconds * 1000;
+}
+
 export const inMemorySessionStore: SessionStore = {
   getToken() {
-    if (currentToken && issuedAtMs !== null) {
-      const expiresAtMs = issuedAtMs + currentToken.access_token_expiry * 1000;
-      if (Date.now() >= expiresAtMs) {
-        currentToken = null;
-        issuedAtMs = null;
-      }
-    }
     return currentToken;
   },
 
   setToken(token: AuthToken) {
     currentToken = token;
     issuedAtMs = Date.now();
+  },
+
+  isAccessTokenExpired(marginMs = 0) {
+    return !currentToken || expiresWithin(currentToken.access_token_expiry, marginMs);
+  },
+
+  isRefreshTokenExpired() {
+    return !currentToken || expiresWithin(currentToken.refresh_token_expiry, 0);
   },
 
   clear() {

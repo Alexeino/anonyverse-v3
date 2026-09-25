@@ -9,7 +9,7 @@ import { colors, fontFamily, spacing, typography } from '../../design/tokens';
 import { rgbaAlpha } from '../../design/svgColor';
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
 import { createSocketIoChatSocketService } from '../../services/chatSocket/socketIoChatSocketService';
-import { inMemorySessionStore } from '../../services/session/inMemorySessionStore';
+import { tokenProvider } from '../../services/session/tokenProvider';
 import type { TopicsSelection } from '../topics/TopicsScreen';
 import { useFindingMatchController } from './useFindingMatchController';
 
@@ -27,16 +27,19 @@ export interface FindingMatchScreenProps {
   selection: TopicsSelection;
   onClose: () => void;
   onMatched: (service: ChatSocketService, partner: string) => void;
+  /** The session expired and couldn't be refreshed — the app must go back through Entry. */
+  onReauthRequired: () => void;
 }
 
 
-export function FindingMatchScreen({ selection, onClose, onMatched }: FindingMatchScreenProps) {
+export function FindingMatchScreen({ selection, onClose, onMatched, onReauthRequired }: FindingMatchScreenProps) {
   const { phase, error, handleClose } = useFindingMatchController(
     selection,
-    inMemorySessionStore,
+    tokenProvider,
     createSocketIoChatSocketService,
     onClose,
     onMatched,
+    onReauthRequired,
   );
 
   return (
@@ -127,6 +130,9 @@ function errorSubtitle(reason: string | undefined): string {
       return "You'll need to verify again before we can match you";
     case 'CONNECTION_TIMEOUT':
       return 'That took too long — check your connection and try again';
+    case 'RATE_LIMITED':
+    case 'UNAVAILABLE':
+      return "We're a little busy right now — try again in a moment";
     default:
       return 'Check your connection and try again';
   }

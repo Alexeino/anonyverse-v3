@@ -21,6 +21,7 @@ function makeAuthService(outcome: GetStartedOutcome): AuthService {
   return {
     getStarted: jest.fn(() => Promise.resolve(outcome)),
     verify: jest.fn(),
+    refresh: jest.fn(),
   };
 }
 
@@ -28,6 +29,8 @@ function makeSessionStore(): SessionStore {
   return {
     getToken: jest.fn(() => null),
     setToken: jest.fn(),
+    isAccessTokenExpired: jest.fn(() => true),
+    isRefreshTokenExpired: jest.fn(() => true),
     clear: jest.fn(),
   };
 }

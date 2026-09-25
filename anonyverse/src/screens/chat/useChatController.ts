@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BackHandler } from 'react-native';
+import { AppState, BackHandler } from 'react-native';
+import { useAppForeground } from '../../hooks/useAppForeground';
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
+import { findMatch } from '../../services/chatSocket/findMatch';
+import type { TokenProvider } from '../../services/session/tokenProvider';
 import type { TopicsSelection } from '../topics/TopicsScreen';
 
 export interface ReplyPreview {
@@ -18,8 +21,12 @@ export interface ChatMessage {
 
 export type RematchState = 'idle' | 'rematching';
 
-/** Why the current rematch started — drives the "finding someone new" modal's subtext. */
-export type RematchReason = 'you_skipped' | 'partner_skipped' | 'partner_ended';
+/**
+ * Why the current rematch started — drives the "finding someone new" modal's subtext.
+ * 'reconnecting': our own socket died (backgrounded, network), so the
+ * server already ended the chat; we reconnect and rejoin from scratch.
+ */
+export type RematchReason = 'you_skipped' | 'partner_skipped' | 'partner_ended' | 'reconnecting';
 
 export interface UseChatControllerResult {
   messages: ChatMessage[];
@@ -45,8 +52,6 @@ export interface UseChatControllerResult {
   rematchGaveUp: boolean;
   /** Whether the "you can't leave mid-chat" confirmation is showing. */
   showLeaveConfirm: boolean;
-  /** The socket dropped mid-chat; the screen should tell the user and leave via handleStopSearching. */
-  connectionLost: boolean;
   /** Opens the leave confirmation — the header's leave button (iOS has no hardware back). */
   handleRequestLeave: () => void;
   handleDismissLeaveConfirm: () => void;
@@ -68,10 +73,14 @@ const SKIP_REFILL_PER_MS = 0.033 / 1000;
 const SKIP_UNAVAILABLE_MESSAGE_MS = 3000;
 const SKIP_UNAVAILABLE_MESSAGE = 'Matchmaking unavailable — try again in a moment';
 const RATE_LIMITED_MESSAGE = "You're going a bit fast — try again in a moment";
+const REJOIN_BUSY_MESSAGE = 'Matchmaking is busy — retrying in a moment…';
+const REJOIN_GAVE_UP_MESSAGE = "Couldn't find a new match right now. Stop searching and try again later.";
 
-// join_chat refills one token every ~15s (WS_JOIN_CHAT_REFILL_RATE=0.067/s).
-const REJOIN_RETRY_DELAY_MS = 15_000;
-const REJOIN_MAX_ATTEMPTS = 3;
+// send_message drops anything over 2000 characters silently.
+const MAX_MESSAGE_LENGTH = 2000;
+/** Input cap, leaving room for the reply envelope's JSON overhead. */
+export const MAX_INPUT_LENGTH = 1500;
+const REPLY_PREVIEW_MAX_LENGTH = 200;
 
 let messageIdCounter = 0;
 function nextMessageId(): string {
@@ -103,7 +112,7 @@ function parseIncomingMessage(raw: string): { text: string; replyTo?: ReplyPrevi
           replyTo: {
             id: reply.id ?? '',
             sender: reply.sender === 'me' ? 'partner' : 'me',
-            text: reply.text,
+            text: reply.text.slice(0, REPLY_PREVIEW_MAX_LENGTH),
           },
         };
       }
@@ -117,11 +126,21 @@ function parseIncomingMessage(raw: string): { text: string; replyTo?: ReplyPrevi
 
 
 const CONNECTED_MESSAGE = "Connected with anonymous partner. Say Hi!";
+const DISCONNECTED_MESSAGE = 'You were disconnected from the chat.';
 
+/**
+ * Owns one Chat session end to end, including what happens after it:
+ * rematching after a skip or the partner leaving, and starting over when
+ * our own socket dies. The server never resumes a session (docs/api.md
+ * "Connection lifecycle rules"), so every recovery is a fresh join_chat
+ * with the same `selection`.
+ */
 export function useChatController(
   chatSocketService: ChatSocketService,
   selection: TopicsSelection,
+  tokenProvider: TokenProvider,
   onLeave: () => void,
+  onReauthRequired: () => void,
 ): UseChatControllerResult {
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
     { id: nextMessageId(), sender: 'system', text: CONNECTED_MESSAGE },
@@ -137,7 +156,6 @@ export function useChatController(
   const [rematchStatusMessage, setRematchStatusMessage] = useState<string | null>(null);
   const [rematchGaveUp, setRematchGaveUp] = useState(false);
   const [showLeaveConfirm, setShowLeaveConfirm] = useState(false);
-  const [connectionLost, setConnectionLost] = useState(false);
   const serviceRef = useRef(chatSocketService);
   serviceRef.current = chatSocketService;
   const selectionRef = useRef(selection);
@@ -149,11 +167,14 @@ export function useChatController(
   const partnerTypingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipBucketRef = useRef({ tokens: SKIP_BUCKET_SIZE, lastRefill: Date.now() });
   const skipUnavailableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const rejoinRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Bumped whenever an in-flight re-join stops being wanted (a match arrived,
-  // a newer re-join started, or the screen unmounted), so a late join_chat
-  // ack/timeout can't schedule another join while the user is already chatting.
-  const rejoinGenerationRef = useRef(0);
+  // The findMatch loop re-joining the queue, if one is running. Aborted
+  // whenever it stops being wanted (a match arrived, a newer re-join
+  // started, or the user left), so it can't join while already chatting.
+  const rejoinRef = useRef<AbortController | null>(null);
+  // Set once the user leaves or the screen unmounts, so nothing reconnects after.
+  const leavingRef = useRef(false);
+  const latestRef = useRef({ tokenProvider, onReauthRequired });
+  latestRef.current = { tokenProvider, onReauthRequired };
 
   const showToast = useCallback((message: string) => {
     if (skipUnavailableTimerRef.current) {
@@ -184,63 +205,98 @@ export function useChatController(
       if (skipUnavailableTimerRef.current) {
         clearTimeout(skipUnavailableTimerRef.current);
       }
+      leavingRef.current = true;
+      rejoinRef.current?.abort();
       serviceRef.current.disconnect();
     };
   }, [chatSocketService]);
+
+  const abortRejoin = useCallback(() => {
+    rejoinRef.current?.abort();
+    rejoinRef.current = null;
+  }, []);
+
+  /**
+   * Looks for a new partner via findMatch, which also refreshes the token
+   * and reconnects as needed. The match itself arrives as match_found,
+   * which the listener below turns into a fresh thread; this only reports
+   * a throttled join or matchmaking giving up.
+   */
+  const rejoin = useCallback(
+    async (connectFirst: boolean) => {
+      abortRejoin();
+      const controller = new AbortController();
+      rejoinRef.current = controller;
+      setRematchStatusMessage(null);
+      setRematchGaveUp(false);
+
+      const result = await findMatch({
+        service: serviceRef.current,
+        tokenProvider: latestRef.current.tokenProvider,
+        selection: selectionRef.current,
+        connectFirst,
+        signal: controller.signal,
+        // Cleared again as each retry goes out.
+        onSearching: () => setRematchStatusMessage(null),
+        onRateLimited: () => setRematchStatusMessage(REJOIN_BUSY_MESSAGE),
+      });
+      if (controller.signal.aborted || leavingRef.current) {
+        return;
+      }
+      rejoinRef.current = null;
+
+      if (result.status === 'reauth_required') {
+        console.error('[Chat] Session expired and could not be refreshed — sending back to Entry.');
+        leavingRef.current = true;
+        serviceRef.current.disconnect();
+        latestRef.current.onReauthRequired();
+      } else if (result.status === 'failed') {
+        console.error('[Chat] Could not find a new match.', result.reason);
+        setRematchStatusMessage(REJOIN_GAVE_UP_MESSAGE);
+        setRematchGaveUp(true);
+      }
+    },
+    [abortRejoin],
+  );
+
+  /**
+   * Our own connection is gone (or may be: the app was backgrounded), so
+   * the server has already ended this chat and forgotten us. Reset and
+   * start over on a fresh socket.
+   */
+  const resume = useCallback(() => {
+    if (leavingRef.current) {
+      return;
+    }
+    abortRejoin();
+    if (typingStopTimerRef.current) {
+      clearTimeout(typingStopTimerRef.current);
+      typingStopTimerRef.current = null;
+    }
+    isTypingRef.current = false;
+    setPartnerTyping(false);
+    setShowLeaveConfirm(false);
+    setReplyingTo(null);
+    setMessages([{ id: nextMessageId(), sender: 'system', text: DISCONNECTED_MESSAGE }]);
+    setRematchReason('reconnecting');
+    setRematchState('rematching');
+    serviceRef.current.disconnect();
+    rejoin(true);
+  }, [abortRejoin, rejoin]);
+
+  useAppForeground(resume);
 
   useEffect(() => {
     // A skip is driven entirely by these two server events rather than the
     // button tap itself, so the "finding someone new" state appears the
     // same way for both people in the chat — whichever of them tapped Skip.
-    const clearRejoinRetry = () => {
-      rejoinGenerationRef.current += 1;
-      if (rejoinRetryTimerRef.current) {
-        clearTimeout(rejoinRetryTimerRef.current);
-        rejoinRetryTimerRef.current = null;
-      }
-    };
-
-    // join_chat can be throttled (ack `{ ok: false, status: 'rate_limited' }`)
-    // or time out — retry a few times rather than leaving the user on
-    // "Finding you someone new" forever, then tell them it gave up.
-    const rejoinQueue = (attempt: number) => {
-      const current = selectionRef.current;
-      const generation = rejoinGenerationRef.current;
-      const isStale = () => generation !== rejoinGenerationRef.current;
-      const retryOrGiveUp = () => {
-        if (isStale()) {
-          return;
-        }
-        if (attempt >= REJOIN_MAX_ATTEMPTS) {
-          setRematchStatusMessage("Couldn't find a new match right now. Stop searching and try again later.");
-          setRematchGaveUp(true);
-          return;
-        }
-        setRematchStatusMessage('Matchmaking is busy — retrying in a moment…');
-        rejoinRetryTimerRef.current = setTimeout(() => rejoinQueue(attempt + 1), REJOIN_RETRY_DELAY_MS);
-      };
-      serviceRef.current.joinChat(current.tags, current.mood, current.optedIn).then(
-        ack => {
-          if (isStale()) {
-            return;
-          }
-          if (ack.ok) {
-            setRematchStatusMessage(null);
-            return;
-          }
-          retryOrGiveUp();
-        },
-        error => {
-          console.error('[Chat] Failed to re-join the queue after the partner left.', error);
-          retryOrGiveUp();
-        },
-      );
-    };
-
     const unsubscribeChatEnded = chatSocketService.onChatEnded(event => {
       // Whatever was open, there's no partner left to save or leave.
       setShowLeaveConfirm(false);
       if (event.reason === 'skipped') {
+        // The server requeues both sides after a skip, and match_found or
+        // queued follows on its own. Don't join_chat here: it would only
+        // spend the join_chat rate limit.
         setRematchReason(event.by === 'self' ? 'you_skipped' : 'partner_skipped');
         setRematchState('rematching');
         return;
@@ -251,15 +307,14 @@ export function useChatController(
       if ((event.reason === 'ended' || event.reason === 'disconnected') && event.by === 'partner') {
         // A partner closing the app ('disconnected') reads the same to this
         // user as them ending the chat.
+        // The server does NOT requeue us here, so rejoin with the same selection.
         setRematchReason('partner_ended');
         setRematchState('rematching');
-        clearRejoinRetry();
-        setRematchGaveUp(false);
-        rejoinQueue(1);
+        rejoin(false);
       }
     });
     const unsubscribeMatchFound = chatSocketService.onMatchFound(() => {
-      clearRejoinRetry();
+      abortRejoin();
       setRematchState('idle');
       setRematchReason(null);
       setRematchStatusMessage(null);
@@ -272,6 +327,14 @@ export function useChatController(
     // The backend reports throttled events only through `error`, so without
     // this a rate-limited skip (or message) would silently do nothing.
     const unsubscribeServerError = chatSocketService.onServerError(event => {
+      if (event.reason === 'not_in_chat') {
+        // The server thinks we're not chatting but the UI does: we missed
+        // a disconnect. Only meaningful while the UI shows a live chat.
+        if (rematchStateRef.current === 'idle') {
+          resume();
+        }
+        return;
+      }
       // While rematching the toast would sit hidden under the modal, which
       // already reports a throttled re-join through its own status line.
       if (event.reason === 'rate_limited' && rematchStateRef.current !== 'rematching') {
@@ -280,9 +343,15 @@ export function useChatController(
     });
 
     const unsubscribeConnectionLost = chatSocketService.onConnectionLost(() => {
-      clearRejoinRetry();
-      setShowLeaveConfirm(false);
-      setConnectionLost(true);
+      // A running findMatch loop recovers from drops itself.
+      if (rejoinRef.current) {
+        return;
+      }
+      // Reconnecting from the background would just be killed again; the
+      // foreground listener resumes once the app is back.
+      if (AppState.currentState === 'active') {
+        resume();
+      }
     });
 
     return () => {
@@ -290,9 +359,9 @@ export function useChatController(
       unsubscribeMatchFound();
       unsubscribeServerError();
       unsubscribeConnectionLost();
-      clearRejoinRetry();
+      abortRejoin();
     };
-  }, [chatSocketService, showToast]);
+  }, [chatSocketService, showToast, rejoin, resume, abortRejoin]);
 
   useEffect(() => {
     const clearPartnerTypingTimeout = () => {
@@ -361,9 +430,18 @@ export function useChatController(
     }
     stopTyping();
     const reply = replyingTo;
-    const payload = reply ? JSON.stringify({ text, replyTo: reply }) : text;
-    serviceRef.current.sendMessage(payload);
-    setMessages(current => [...current, { id: nextMessageId(), sender: 'me', text, replyTo: reply ?? undefined }]);
+    const envelope = reply
+      ? JSON.stringify({ text, replyTo: { ...reply, text: reply.text.slice(0, REPLY_PREVIEW_MAX_LENGTH) } })
+      : null;
+    // Fall back to plain text rather than let the server silently drop an
+    // over-long envelope. The local bubble drops its reply too, so it shows
+    // what the partner actually receives.
+    const sendEnvelope = envelope !== null && envelope.length <= MAX_MESSAGE_LENGTH;
+    serviceRef.current.sendMessage(sendEnvelope ? envelope : text);
+    setMessages(current => [
+      ...current,
+      { id: nextMessageId(), sender: 'me', text, replyTo: sendEnvelope && reply ? reply : undefined },
+    ]);
     setInputValueState('');
     setReplyingTo(null);
   }, [inputValue, replyingTo, stopTyping]);
@@ -396,9 +474,11 @@ export function useChatController(
   }, [skipSecondsRemaining, showToast]);
 
   const handleStopSearching = useCallback(() => {
+    leavingRef.current = true;
+    abortRejoin();
     serviceRef.current.disconnect();
     onLeave();
-  }, [onLeave]);
+  }, [abortRejoin, onLeave]);
 
   const handleRequestLeave = useCallback(() => {
     setShowLeaveConfirm(true);
@@ -410,14 +490,16 @@ export function useChatController(
 
   const handleConfirmLeave = useCallback(() => {
     setShowLeaveConfirm(false);
+    leavingRef.current = true;
+    abortRejoin();
     serviceRef.current.sendEndChat();
     serviceRef.current.disconnect();
     onLeave();
-  }, [onLeave]);
+  }, [abortRejoin, onLeave]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (rematchState === 'rematching' || connectionLost) {
+      if (rematchState === 'rematching') {
         // Same exit as the "Stop searching" button — no partner to save,
         // so back just leaves the same way that button already does.
         handleStopSearching();
@@ -434,7 +516,7 @@ export function useChatController(
     });
 
     return () => subscription.remove();
-  }, [rematchState, showLeaveConfirm, connectionLost, handleStopSearching]);
+  }, [rematchState, showLeaveConfirm, handleStopSearching]);
 
   return {
     messages,
@@ -456,7 +538,6 @@ export function useChatController(
     handleStopSearching,
     rematchStatusMessage,
     rematchGaveUp,
-    connectionLost,
     showLeaveConfirm,
     handleRequestLeave,
     handleDismissLeaveConfirm,

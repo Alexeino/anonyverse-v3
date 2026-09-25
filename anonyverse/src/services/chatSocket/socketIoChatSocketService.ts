@@ -1,17 +1,21 @@
 import { io, type Socket } from 'socket.io-client';
-import { env } from '../../config/env';
+import { env, isApiBaseUrlSecure } from '../../config/env';
 import type { ChatSocketService } from './ChatSocketService';
 import type {
   ChatEndedEvent,
   ChatSocketConnectError,
   ChatSocketConnectErrorReason,
   JoinChatAck,
+  JoinChatError,
   MatchFoundEvent,
+  QueuedEvent,
   ReceiveMessageEvent,
   ServerErrorEvent,
 } from './types';
 
 const CONNECTION_TIMEOUT_MS = 10_000;
+// The server sends no ack at all when none of the tags are allowed (see
+// docs/api.md "Known issues"), so an ack timeout is required, not defensive.
 const JOIN_CHAT_TIMEOUT_MS = 10_000;
 
 /**
@@ -42,11 +46,11 @@ function joinChatOnSocket(
     }
 
     const timeoutId = setTimeout(() => {
-      settle(() => reject({ reason: 'UNKNOWN_ERROR' }));
+      settle(() => reject({ reason: 'JOIN_TIMEOUT' } satisfies JoinChatError));
     }, JOIN_CHAT_TIMEOUT_MS);
 
     function onDisconnect() {
-      settle(() => reject({ reason: 'UNKNOWN_ERROR' }));
+      settle(() => reject({ reason: 'NOT_CONNECTED' } satisfies JoinChatError));
     }
     activeSocket.once('disconnect', onDisconnect);
 
@@ -61,18 +65,26 @@ function mapConnectErrorReason(error: unknown): ChatSocketConnectErrorReason {
     (error as { data?: { reason?: string }; reason?: string } | undefined)?.data?.reason ??
     (error as { reason?: string } | undefined)?.reason;
 
-  if (reason === 'invalid_token') {
-    return 'AUTH_ERROR';
+  switch (reason) {
+    case 'invalid_token':
+      return 'AUTH_ERROR';
+    case 'missing_token':
+      return 'MISSING_TOKEN';
+    case 'rate_limited':
+      return 'RATE_LIMITED';
+    case 'unavailable':
+      return 'UNAVAILABLE';
+    default:
+      return 'UNKNOWN_ERROR';
   }
-  if (reason === 'missing_token') {
-    return 'MISSING_TOKEN';
-  }
-  return 'UNKNOWN_ERROR';
 }
 
 export function createSocketIoChatSocketService(): ChatSocketService {
   let socket: Socket | null = null;
+  // Rejects the connect() still waiting on `socket`'s handshake, if any.
+  let abortPendingConnect: (() => void) | null = null;
   const matchFoundHandlers = new Set<(event: MatchFoundEvent) => void>();
+  const queuedHandlers = new Set<(event: QueuedEvent) => void>();
   const receiveMessageHandlers = new Set<(event: ReceiveMessageEvent) => void>();
   const partnerTypingHandlers = new Set<() => void>();
   const partnerTypingStopHandlers = new Set<() => void>();
@@ -82,6 +94,10 @@ export function createSocketIoChatSocketService(): ChatSocketService {
 
   function handleMatchFound(event: MatchFoundEvent) {
     matchFoundHandlers.forEach(handler => handler(event));
+  }
+
+  function handleQueued(event: QueuedEvent) {
+    queuedHandlers.forEach(handler => handler(event));
   }
 
   function handleReceiveMessage(event: ReceiveMessageEvent) {
@@ -113,32 +129,49 @@ export function createSocketIoChatSocketService(): ChatSocketService {
     connectionLostHandlers.forEach(handler => handler());
   }
 
+  function closeSocket() {
+    if (!socket) {
+      return;
+    }
+    const closing = socket;
+    socket = null;
+    abortPendingConnect?.();
+    abortPendingConnect = null;
+    closing.off('match_found', handleMatchFound);
+    closing.off('queued', handleQueued);
+    closing.off('receive_message', handleReceiveMessage);
+    closing.off('partner_typing', handlePartnerTyping);
+    closing.off('partner_typing_stop', handlePartnerTypingStop);
+    closing.off('chat_ended', handleChatEnded);
+    closing.off('error', handleServerError);
+    closing.off('disconnect', handleSocketDisconnect);
+    closing.disconnect();
+  }
+
   return {
-    connect(accessToken, topic) {
+    connect(getAccessToken) {
+      closeSocket();
+
       return new Promise<void>((resolve, reject) => {
-        const isSecureScheme = /^https:\/\//.test(env.apiBaseUrl);
-        if (!isSecureScheme && !__DEV__) {
-          const error: ChatSocketConnectError = { reason: 'UNKNOWN_ERROR' };
-          console.error(
-            '[ChatSocket] Refusing to connect — API_BASE_URL must use https:// in production so the auth token is never sent in cleartext.',
-          );
-          reject(error);
+        if (!isApiBaseUrlSecure()) {
+          reject({ reason: 'UNKNOWN_ERROR' } satisfies ChatSocketConnectError);
           return;
-        }
-        if (!isSecureScheme && __DEV__) {
-          console.warn(
-            '[ChatSocket] API_BASE_URL is not https:// — the auth token will be sent in cleartext. Only use this against a trusted local backend.',
-          );
         }
 
         const nextSocket = io(env.apiBaseUrl, {
           transports: ['websocket'],
-          auth: { token: accessToken, topic },
+          // A callback, so every handshake sends the current token rather
+          // than one captured when this socket was created.
+          auth: callback => callback({ token: getAccessToken() }),
           extraHeaders: __DEV__ ? { 'ngrok-skip-browser-warning': 'true' } : {},
+          // The server never resumes a session, so socket.io's own
+          // reconnection would only produce an idle socket the UI doesn't
+          // know about. The controllers reconnect and rejoin explicitly.
           reconnection: false,
         });
         socket = nextSocket;
         nextSocket.on('match_found', handleMatchFound);
+        nextSocket.on('queued', handleQueued);
         nextSocket.on('receive_message', handleReceiveMessage);
         nextSocket.on('partner_typing', handlePartnerTyping);
         nextSocket.on('partner_typing_stop', handlePartnerTypingStop);
@@ -153,19 +186,18 @@ export function createSocketIoChatSocketService(): ChatSocketService {
           }
           settled = true;
           clearTimeout(timeoutId);
+          abortPendingConnect = null;
           nextSocket.off('connect', onConnect);
           nextSocket.off('connect_error', onConnectError);
           run();
         }
 
-        function rejectWith(error: ChatSocketConnectError) {
-          reject(error);
-        }
-
         const timeoutId = setTimeout(() => {
           settle(() => {
-            nextSocket.disconnect();
-            rejectWith({ reason: 'CONNECTION_TIMEOUT' });
+            if (socket === nextSocket) {
+              closeSocket();
+            }
+            reject({ reason: 'CONNECTION_TIMEOUT' } satisfies ChatSocketConnectError);
           });
         }, CONNECTION_TIMEOUT_MS);
 
@@ -174,8 +206,18 @@ export function createSocketIoChatSocketService(): ChatSocketService {
         }
 
         function onConnectError(error: unknown) {
-          settle(() => rejectWith({ reason: mapConnectErrorReason(error), raw: error }));
+          settle(() => {
+            if (socket === nextSocket) {
+              closeSocket();
+            }
+            reject({ reason: mapConnectErrorReason(error), raw: error } satisfies ChatSocketConnectError);
+          });
         }
+
+        // Closed (or replaced by a newer connect) before the handshake
+        // finished — settle now rather than waiting out the timeout.
+        abortPendingConnect = () =>
+          settle(() => reject({ reason: 'UNKNOWN_ERROR' } satisfies ChatSocketConnectError));
 
         nextSocket.on('connect', onConnect);
         nextSocket.on('connect_error', onConnectError);
@@ -183,8 +225,8 @@ export function createSocketIoChatSocketService(): ChatSocketService {
     },
 
     joinChat(tags, mood, optedIn) {
-      if (!socket) {
-        return Promise.reject<JoinChatAck>({ reason: 'UNKNOWN_ERROR' });
+      if (!socket?.connected) {
+        return Promise.reject({ reason: 'NOT_CONNECTED' } satisfies JoinChatError);
       }
       return joinChatOnSocket(socket, tags, toBackendMood(mood), optedIn);
     },
@@ -193,6 +235,13 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       matchFoundHandlers.add(handler);
       return () => {
         matchFoundHandlers.delete(handler);
+      };
+    },
+
+    onQueued(handler) {
+      queuedHandlers.add(handler);
+      return () => {
+        queuedHandlers.delete(handler);
       };
     },
 
@@ -273,19 +322,6 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       };
     },
 
-    disconnect() {
-      if (!socket) {
-        return;
-      }
-      socket.off('match_found', handleMatchFound);
-      socket.off('receive_message', handleReceiveMessage);
-      socket.off('partner_typing', handlePartnerTyping);
-      socket.off('partner_typing_stop', handlePartnerTypingStop);
-      socket.off('chat_ended', handleChatEnded);
-      socket.off('error', handleServerError);
-      socket.off('disconnect', handleSocketDisconnect);
-      socket.disconnect();
-      socket = null;
-    },
+    disconnect: closeSocket,
   };
 }

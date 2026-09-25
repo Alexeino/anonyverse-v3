@@ -8,7 +8,7 @@ const DEVICE_ID_KEY = 'anonyverse.device_id';
  * iOS: Keychain. Android: EncryptedSharedPreferences.
  *
  * This is the bare-RN equivalent of the expo-secure-store usage in the
- * previous app (see docs/api.md, Appendix). Not specified in
+ * previous app (anonyverse-v2). Not specified in
  * docs/architecture.md's recommended stack — flagged as an added
  * dependency in the Entry screen implementation report.
  */

@@ -33,6 +33,19 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
+/**
+ * The refresh token was revoked or expired mid-flow: only Entry's
+ * get-started (or the captcha after it) can issue a new session, so
+ * restart the stack there with nothing to go back to.
+ */
+function useResetToEntry() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  return useCallback(() => {
+    navigation.reset({ index: 0, routes: [{ name: 'Entry' }] });
+  }, [navigation]);
+}
+
 function EntryRoute() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -61,6 +74,7 @@ function VerificationRoute() {
   const moodSelectedRef = useRef(false);
   const captureAnalytics = useAnalyticsCapture();
   const [chatHandoff, setChatHandoff] = useState<ChatHandoff | null>(null);
+  const handleReauthRequired = useResetToEntry();
 
   const handleVerified = useCallback(() => {
     setStep('mood_select');
@@ -113,9 +127,15 @@ function VerificationRoute() {
           chatSocketService={chatHandoff.service}
           selection={selection}
           onLeave={handleLeaveChat}
+          onReauthRequired={handleReauthRequired}
         />
       ) : displayStep === 'finding_match' && selection ? (
-        <FindingMatchScreen selection={selection} onClose={handleCancelSearch} onMatched={handleMatched} />
+        <FindingMatchScreen
+          selection={selection}
+          onClose={handleCancelSearch}
+          onMatched={handleMatched}
+          onReauthRequired={handleReauthRequired}
+        />
       ) : displayStep === 'topics' && mood ? (
         <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} />
       ) : displayStep === 'mood_select' ? (
@@ -156,6 +176,7 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
   const captureAnalytics = useAnalyticsCapture();
   const { showProgress } = route.params;
   const [chatHandoff, setChatHandoff] = useState<ChatHandoff | null>(null);
+  const handleReauthRequired = useResetToEntry();
 
   const handleSelectMood = useCallback((selectedMood: Mood) => {
     if (moodSelectedRef.current) {
@@ -200,9 +221,15 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
           chatSocketService={chatHandoff.service}
           selection={selection}
           onLeave={handleLeaveChat}
+          onReauthRequired={handleReauthRequired}
         />
       ) : displayStep === 'finding_match' && selection ? (
-        <FindingMatchScreen selection={selection} onClose={handleCancelSearch} onMatched={handleMatched} />
+        <FindingMatchScreen
+          selection={selection}
+          onClose={handleCancelSearch}
+          onMatched={handleMatched}
+          onReauthRequired={handleReauthRequired}
+        />
       ) : displayStep === 'topics' && mood ? (
         <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} />
       ) : (
@@ -228,6 +255,7 @@ function DevFindingMatchRoute() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const selectionRef = useRef<TopicsSelection>({ mood: 'good', tags: ['life'], optedIn: true });
+  const handleReauthRequired = useResetToEntry();
 
   return (
     <FindingMatchScreen
@@ -236,6 +264,7 @@ function DevFindingMatchRoute() {
       onMatched={(service, partner) =>
         navigation.navigate('DevChat', { service, partner, mood: selectionRef.current.mood, topic: selectionRef.current.tags[0] ?? null })
       }
+      onReauthRequired={handleReauthRequired}
     />
   );
 }
@@ -251,12 +280,14 @@ function DevChatRoute({ route }: NativeStackScreenProps<RootStackParamList, 'Dev
   const params = route.params;
   const mood = params?.mood ?? 'good';
   const topic = params?.topic ?? 'hobbies';
+  const handleReauthRequired = useResetToEntry();
 
   return (
     <ChatScreen
       chatSocketService={params?.service ?? fallbackServiceRef.current}
       selection={{ mood, tags: topic ? [topic] : [], optedIn: false }}
       onLeave={() => navigation.navigate('DevMenu')}
+      onReauthRequired={handleReauthRequired}
     />
   );
 }
@@ -306,7 +337,7 @@ function DevMenuRoute() {
     },
     {
       label: 'Finding Match',
-      description: "Connects for real — shows the MISSING_TOKEN error state unless you've verified this session.",
+      description: "Connects for real — sends you back to Entry unless you've verified this session.",
       onPress: () => navigation.navigate('DevFindingMatch'),
     },
     {

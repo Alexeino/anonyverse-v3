@@ -1,344 +1,365 @@
-# Anonyverse API Reference
+# Anonyverse API contract
 
-Reverse-engineered from the client app (`anonyverse-v2`) as of 2026-09-07. This documents every backend call the app makes today, plus the gaps where the client has UI/state for a feature but no backend call exists yet.
+This is the contract between the Anonyverse backend (`anonyverse-core`) and its clients: the REST endpoints, the Socket.IO events, and the rules a client must follow when the connection drops. If the backend changes any behaviour described here, update this file in the same PR.
 
-The client talks to the backend over two channels:
+- [Overview](#overview)
+- [Authentication](#authentication)
+- [REST endpoints](#rest-endpoints)
+- [Socket connection](#socket-connection)
+- [Client → server events](#client--server-events)
+- [Server → client events](#server--client-events)
+- [Flows](#flows)
+- [Connection lifecycle rules](#connection-lifecycle-rules)
+- [Rate limits](#rate-limits)
+- [Known issues](#known-issues)
 
-1. **REST** — `axios` client (`src/network/client.ts`), base URL from `EXPO_PUBLIC_API_BASE_URL` (`ENV.API_BASE_URL`). Used for device onboarding, human verification, and token refresh.
-2. **WebSocket (Socket.IO)** — `src/chat/services.ts`, connects to the same `API_BASE_URL` over the `websocket` transport. Used for matchmaking and live chat.
+## Overview
 
-There's also a **static config fetch** (not a backend API — a JSON file on a CDN) used to drive the topic-selection screen.
+| | |
+|---|---|
+| REST base path | `/api/v1` |
+| Socket.IO path | `/socket.io` (same host) |
+| Socket transport | **WebSocket only**. Long-polling is disabled. |
+| Encoding | JSON |
+| Identity | A **device**, identified by `device_id`. There are no user accounts. |
 
-All REST requests are sent with header `ngrok-skip-browser-warning: true` (a dev artifact of tunneling local backends through ngrok) and `Content-Type: application/json`.
+A client first gets a JWT pair over REST, then opens a Socket.IO connection with the access token. All matchmaking and chat happens over the socket.
 
----
+## Authentication
 
-## 1. REST API
+```text
+App start
+  │
+  ├─ POST /api/v1/captcha/get-started  { device_id?, platform, app_version }
+  │     ├─ verified: true  → use the returned token, skip captcha
+  │     └─ verified: false → show Turnstile captcha
+  │                           └─ POST /api/v1/captcha/verify  { token, device_id?, platform?, app_version? }
+  │                                 → token + device (store device.device_id)
+  │
+  ├─ Connect the socket with auth: { token: access_token }
+  │
+  └─ Before the access token expires: POST /api/v1/jwt/refresh { refresh_token }
+```
 
-### POST /api/v1/captcha/get-started
+### Token object
 
-**Purpose:**
-Called on every cold app start. Checks whether this device is already known/verified and, if so, returns session tokens directly — skipping the human-verification (captcha) screen.
+Returned by `get-started` (when verified) and `verify`:
 
-**Request:**
 ```json
 {
-  "device_id": "existing-device-id-or-null",
-  "app_version": "1.0.0",
-  "platform": "ios"
+  "access_token": "<jwt>",
+  "refresh_token": "<jwt>",
+  "access_token_expiry": 1800,
+  "refresh_token_expiry": 14400
 }
 ```
 
-**Response:**
+| Field | Meaning |
+|---|---|
+| `access_token` | Used to connect the socket. Valid for 30 minutes. |
+| `refresh_token` | Used once to get a new pair. Valid for 4 hours. **Each refresh revokes the old refresh token**, so always store the new one. |
+| `*_expiry` | Lifetime in **seconds** from the moment the token was issued (not a timestamp). |
+
+The JWT claims are `device_id`, `iat`, `exp`, `token_type` (`"access"` or `"refresh"`), `turnstile_verified`, and `jti` (refresh tokens only). Clients don't need to decode them.
+
+## REST endpoints
+
+Every error response uses FastAPI's shape: `{"detail": "<message>"}`. A request body that fails validation returns `422` with FastAPI's standard validation error.
+
+### `POST /api/v1/captcha/get-started`
+
+Checks whether this device is already known, so the app can skip the captcha.
+
+Request:
+
+```json
+{
+  "device_id": "device_01a0…",   // optional; omit on first install
+  "platform": "ios",             // required
+  "app_version": "1.0.0"         // required
+}
+```
+
+Response `200`:
+
 ```json
 {
   "device_exists": true,
   "verified": true,
-  "token": {
-    "access_token": "...",
-    "refresh_token": "...",
-    "access_token_expiry": 3600,
-    "refresh_token_expiry": 2592000
-  },
-  "device": {
-    "device_id": "..."
-  }
+  "token": { …token object… }    // null when verified is false
 }
 ```
 
-`token` and `device` are omitted when the device is new or not yet verified.
+- With no `device_id`, it returns `device_exists: false, verified: false, token: null`.
+- A device only counts as known if **`device_id`, `platform` and `app_version` all match** what was stored at verification. After an app update (a new `app_version`), the device is treated as unknown and has to pass the captcha again.
 
-**Client behavior:**
-- `verified: true` + `token` present → tokens are stored, user is treated as authenticated.
-- Otherwise → user is routed to the verification (Cloudflare Turnstile) screen.
-- HTTP 401 is also treated as "verification required".
+Errors: `429`.
 
-**Possible outcomes:**
-- `AUTHENTICATED`
-- `VERIFICATION_REQUIRED`
-- `FAILED` (network/server error)
+### `POST /api/v1/captcha/verify`
 
----
+Verifies a Cloudflare Turnstile token, registers the device if needed, and issues tokens.
 
-### POST /api/v1/captcha/verify
+Request:
 
-**Purpose:**
-Submits a completed Cloudflare Turnstile challenge to verify the device as human and issue session tokens.
-
-**Request:**
 ```json
 {
-  "device_id": "existing-device-id-or-null",
-  "token": "turnstile-challenge-token",
-  "platform": "ios",
-  "app_version": "1.0.0"
+  "token": "<turnstile token>",  // required
+  "device_id": "device_01a0…",   // optional
+  "platform": "ios",             // optional
+  "app_version": "1.0.0"         // optional
 }
 ```
 
-**Response:**
+Response `200` on success:
+
 ```json
 {
   "success": true,
-  "token": {
-    "access_token": "...",
-    "refresh_token": "...",
-    "access_token_expiry": 3600,
-    "refresh_token_expiry": 2592000
-  },
-  "device": {
-    "device_id": "...",
-    "platform": "ios",
-    "app_version": "1.0.0"
-  }
+  "token": { …token object… },
+  "device": { "device_id": "device_01a0…", "platform": "ios", "app_version": "1.0.0" }
 }
 ```
 
-**Possible outcomes:**
-- `success: true` → tokens saved, user authenticated.
-- `success: false` or request throws → verification failed, user stays on the verification screen.
+Response `200` when the captcha fails: `{"success": false, "token": null, "device": null}`.
 
----
+- Without a `device_id`, the server creates one (`device_<uuid7>`). **Store `device.device_id`** and send it on every later `get-started` and `verify`.
+- With a `device_id` the server hasn't seen, the server registers it under that id.
 
-### POST /api/v1/jwt/refresh
+Errors: `429`, `500 {"detail": "Error verifying captcha"}`.
 
-**Purpose:**
-Exchanges a refresh token for a new access/refresh token pair. Called lazily whenever the client is about to make an authenticated call (REST or socket) and detects the stored access token has expired (see `useSession`/`recoverAndResume` in `src/shared/hooks/sessions.ts`).
+### `POST /api/v1/jwt/refresh`
 
-**Request:**
+Request: `{"refresh_token": "<jwt>"}`
+
+Response `200`:
+
 ```json
 {
-  "refresh_token": "..."
+  "access_token": "<jwt>",
+  "access_token_expiry": 1800,
+  "refresh_token": "<jwt>",
+  "refresh_token_expiry": 14400
 }
 ```
 
-**Response:**
-```json
-{
-  "access_token": "...",
-  "refresh_token": "...",
-  "access_token_expiry": 3600,
-  "refresh_token_expiry": 2592000
-}
-```
+| Status | `detail` | What the client should do |
+|---|---|---|
+| `401` | `Refresh token has been revoked` | Go back to `get-started` / captcha |
+| `401` | `Invalid or expired refresh token` | Go back to `get-started` / captcha |
+| `429` | `Too many requests` | Back off and retry |
+| `503` | `Service unavailable` | Retry with backoff |
+| `500` | `Internal server error` | Retry with backoff |
 
-**Possible outcomes:**
-- 200 → new tokens saved, session resumed.
-- 401 → refresh token itself expired/invalid, client falls back to `VERIFICATION_REQUIRED` (re-runs `get-started`/verification flow).
-- Other error → `FAILED`.
+### `GET /api/v1/health`
 
-**Note:** expiry fields are relative seconds-from-now (`token.access_token_expiry * 1000` is added to `Date.now()` client-side), not absolute timestamps.
+Not rate limited. Response `200`: `{"status": "ok", "db": "ok" | "error", "cache": "ok" | "error"}`.
 
----
+(`/docs`, `/docs/login` and `/api/v1/jwt/docs/token` are internal and serve the Swagger UI. Clients don't use them.)
 
-## 2. App Config (static JSON, not a backend endpoint)
+## Socket connection
 
-### GET `EXPO_PUBLIC_CONFIG_URL`
+```ts
+import { io } from "socket.io-client";
 
-Defaults to `https://config.anonyverse.app/dist/app-configs.json`. This is a static, unauthenticated JSON file (likely on a CDN), fetched with `silent: true` (no user-facing error toast on failure), used purely to drive the topic-selection screen. It is **not** part of the application backend and has no request body.
-
-**Response:**
-```json
-{
-  "version": 1,
-  "topics": [
-    {
-      "id": "life",
-      "title": "Life",
-      "description": "Talk about everyday life",
-      "icon": "material-icon-name",
-      "enabled": true,
-      "theme": { "...": "optional card theme overrides" }
-    }
-  ]
-}
-```
-
----
-
-## 3. Realtime API (Socket.IO)
-
-### Connection
-
-```
-io(API_BASE_URL, {
+const socket = io(BASE_URL, {
+  path: "/socket.io",
   transports: ["websocket"],
-  auth: {
-    token: accessToken,
-    topic: primaryTopic   // tags[0], or null
-  },
-  extraHeaders: { "ngrok-skip-browser-warning": "true" }
-})
+  // Use a callback so every reconnect sends the current access token.
+  auth: (cb) => cb({ token: getAccessToken() }),
+});
 ```
 
-- Requires a valid `access_token` (from the REST flow above) — if none is stored, the client never attempts to connect (`MISSING_TOKEN`).
-- One socket connection is reused for the entire matchmaking + chat session; the client explicitly disconnects and creates a fresh socket per new search.
-- Connection timeout is 10s client-side; no response within that window resolves as `CONNECTION_TIMEOUT`.
-- `connect_error` payloads are parsed for a `reason` field; known reasons are mapped to `AUTH_ERROR` (`invalid_token`) or `MISSING_TOKEN` (`missing_token`), else `UNKNOWN_ERROR`.
+### Connection refused
 
-### Client → Server events
+If the server rejects the connection, the client gets a `connect_error`. `err.message` is the reason, and `err.data` holds both the code and the reason:
 
-#### `join_chat`
-
-**Purpose:**
-Enter (or re-enter) the matchmaking queue. Emitted automatically right after connecting, and again automatically by the client if it reconnects while still waiting or if the partner ends/disconnects (server-driven re-queue after a skip is NOT re-triggered client-side, to avoid a race — the server is expected to requeue both sides on `skip_chat` itself).
-
-**Payload (positional args):**
-```
-join_chat(tags: string[], mood: string, optedIn: boolean)
-```
-- `tags` — selected topic(s), e.g. `["life", "work"]`
-- `mood` — `"casual"` by default, or a mood value selected via the mood-selection modal
-- `optedIn` — whether the user opted in to be matched with someone in a worse mood (shown as a banner on the happy topic-selection screen)
-
-**Response:** none directly; the server responds asynchronously via `match_found` (see below).
-
----
-
-#### `send_message`
-
-**Purpose:**
-Send a chat message to the currently matched partner.
-
-**Payload:**
-A single string. If the message is a reply to another message, the client JSON-encodes it as `{"text": "...", "replyTo": {...}}`; otherwise it's sent as a plain string. The server is expected to treat this opaquely and echo it back to the partner via `receive_message` — encoding/decoding of the reply envelope is entirely client-side convention, not a server contract.
-
-```
-send_message("plain text")
-send_message("{\"text\":\"plain text\",\"replyTo\":{\"id\":\"...\",\"sender\":\"me\",\"text\":\"...\"}}")
+```ts
+socket.on("connect_error", (err) => {
+  err.message; // "invalid_token"
+  err.data;    // { code: 401, reason: "invalid_token" }
+});
 ```
 
-**Response:** none to the sender; delivered to the partner as `receive_message`.
+Errors raised by the client library itself (for example, the network is down) have no `err.data`.
 
----
+| code | reason | Cause | What the client should do |
+|---|---|---|---|
+| 401 | `missing_token` | No `auth.token` | Get a token first |
+| 401 | `invalid_token` | Expired, malformed or wrong type (a refresh token) | Refresh the token, then reconnect |
+| 429 | `rate_limited` | Too many connects from this device (see [Rate limits](#rate-limits)) | Wait about 10 seconds, then reconnect |
+| 503 | `unavailable` | The server couldn't register the session | Retry with backoff |
 
-#### `skip_chat`
+### Heartbeat
 
-**Purpose:**
-End the current chat and immediately look for a new partner (both users are expected to be re-queued server-side).
+The server pings every **25s** and drops the connection if a pong doesn't arrive within **60s**. The Socket.IO client handles this automatically. When a connection disappears without closing cleanly (lost signal), the server may take up to about **85s** to notice.
 
-**Payload:** none.
+### Identity on the socket
 
-**Response:** none directly; server is expected to emit `chat_ended` (reason `"skipped"`) to both sides.
+Every connection gets a new server-side id (the **sid**). A reconnect is a new sid with **no queue or chat state**: the server does not resume anything. `match_found.partner` is the partner's sid. Treat it as an opaque, per-connection value.
 
----
+## Client → server events
 
-#### `end_chat`
+All events are rate limited **per device**. When a limit is hit, the server emits `error {code: 429, reason: "rate_limited"}`, except for typing events, which are dropped silently.
 
-**Purpose:**
-End the current chat without automatically re-queueing.
+### `join_chat(tags, mood, opted_in)` → ack
 
-**Payload:** none.
+Start looking for a partner.
 
-**Response:** none directly; server is expected to emit `chat_ended` (reason `"ended"`) to both sides.
+| Argument | Type | Meaning |
+|---|---|---|
+| `tags` | `string[]` | Topics. Allowed: `life`, `work`, `relationships`, `health`, `overthinking`, `hobbies`, `love`, `career`. Unknown tags are ignored. |
+| `mood` | `string` | `"fl"` means low mood: only match partners who have `opted_in`. Any other value has no effect. |
+| `opted_in` | `boolean` | Willing to be matched with low-mood users. |
 
----
+Send the arguments positionally, and use an ack:
 
-#### `report_user`
-
-**Purpose:**
-Report the current chat partner for review.
-
-**Payload:** none — fire-and-forget, no report reason/category is sent.
-
-**Response:** none observed client-side. The client optimistically shows a confirmation UI ("All reports are anonymous and confidential") without waiting on any server acknowledgment.
-
-**Gap:** there is no ack/response event handled for this — see [Not Yet Implemented](#4-not-yet-implemented--planned) below.
-
----
-
-#### `typing` / `typing_stop`
-
-**Purpose:**
-Notify the partner that the user is/isn't currently typing. Debounced client-side (`typing_stop` auto-fires after 4s of inactivity or on send/blur).
-
-**Payload:** none.
-
-**Response:** delivered to the partner as `partner_typing` / `partner_typing_stop`.
-
----
-
-### Server → Client events
-
-#### `match_found`
-
-**Purpose:**
-Sent when the matchmaking queue pairs the user with a partner.
-
-**Payload:**
-```json
-{ "partner": "partner-socket-or-user-id" }
+```ts
+const res = await socket.emitWithAck("join_chat", ["work", "life"], "casual", true);
 ```
 
-**Client behavior:** opens/resets `activeChat` with a system "Connected with anonymous partner. Say Hi!" message. If a `chat_ended` for the previous partner is still pending, the transition is delayed ~600ms so the "ended" state is visible before the new match appears.
+Ack:
 
----
+| Ack | Meaning |
+|---|---|
+| `{ok: true, status: "matched"}` | Matched. A `match_found` event arrives as well (**before** the ack). |
+| `{ok: true, status: "queued"}` | Waiting. A `match_found` will arrive when someone joins. |
+| `{ok: false, status: "rate_limited"}` | Too many joins. An `error` event is emitted too. |
+| `{ok: false, status: "offline"}` | The connection closed while matching. In practice the client never sees this. |
 
-#### `chat_ended`
+If **none** of the tags are allowed, the server raises and **no ack is sent**. Use a timeout on the ack.
 
-**Purpose:**
-Sent when the current chat ends, for any reason.
+Partners are ranked by how many tags they share with you. Matching is instant when someone is waiting; otherwise you wait in the queue.
 
-**Payload:**
-```json
-{ "reason": "skipped" | "ended" | "disconnected", "by": "self" | "partner" }
+### `send_message(message)`
+
+`message` is a string of up to **2000 characters**. It is delivered to the partner as `receive_message`. The sender gets no echo or ack.
+
+- Not in a chat → `error {code: 409, reason: "not_in_chat"}`.
+- A non-string or a message over 2000 characters is **dropped silently**.
+
+### `skip_chat()`
+
+End the current chat and look for someone new. Both users are put back in matchmaking automatically, and the two devices can't be matched with each other again for **20s**, even if either one reconnects. See [Skip](#skip).
+
+If you're not in a chat, nothing happens and no event is sent.
+
+### `end_chat()`
+
+Stop chatting (or stop searching). The server always replies with `chat_ended {reason: "ended", by: "self"}`.
+
+- In a chat → the partner gets `chat_ended {reason: "ended", by: "partner"}`. **Neither user is requeued.**
+- Queued → you're removed from the queue (this cancels the search).
+
+### `typing()` / `typing_stop()`
+
+Forwarded to the partner as `partner_typing` / `partner_typing_stop`. Ignored when you're not in a chat or when rate limited.
+
+## Server → client events
+
+| Event | Payload | When |
+|---|---|---|
+| `match_found` | `{partner: string}` | You were paired: from `join_chat`, when someone joins while you're queued, or after a skip. |
+| `queued` | `{partner: null}` | **After a skip only**: you were put back in the queue. (After `join_chat`, "queued" comes in the ack instead.) |
+| `chat_ended` | `{reason, by}` | See the table below. |
+| `receive_message` | `{message: string}` | The partner sent a message. |
+| `partner_typing` | `{}` | The partner is typing. |
+| `partner_typing_stop` | `{}` | The partner stopped typing. |
+| `error` | `{code, reason}` | `429 rate_limited` or `409 not_in_chat`. |
+
+`chat_ended`:
+
+| reason | by | Meaning | Are you requeued? |
+|---|---|---|---|
+| `skipped` | `self` | You skipped | Yes, `match_found` or `queued` follows |
+| `skipped` | `partner` | Your partner skipped you | Yes, `match_found` or `queued` follows |
+| `ended` | `self` | You called `end_chat` | No |
+| `ended` | `partner` | Your partner called `end_chat` | **No: call `join_chat` again if you want a new partner** |
+| `disconnected` | `partner` | Your partner's connection dropped (app in the background, closed, lost network) | **No: call `join_chat` again if you want a new partner** |
+
+The server also sends `chat_ended {reason: "disconnected", by: "self"}`, but it's addressed to the connection that just closed, so **a client never receives it**. See [Connection lifecycle rules](#connection-lifecycle-rules).
+
+## Flows
+
+### Find a match
+
+```text
+A: join_chat(...)            → ack {status: "queued"}
+B: join_chat(...)            → match_found {partner: A}   then ack {status: "matched"}
+A:                           ← match_found {partner: B}
 ```
 
-**Client behavior:**
-- `reason: "skipped"` → shows a rematching state and waits for the next `match_found`. If 3+ skips happen within 8 seconds, the client stops auto-rematching and shows a "Matchmaking unavailable" toast instead (client-side rate limit, not server-driven).
-- `reason: "ended"` or `"disconnected"` → chat is marked ended with a system message; if `by: "partner"`, the client automatically re-emits `join_chat` to look for a new match.
+### Chat
 
-**Possible states surfaced in the UI:** `searching`, `matched`, `rematching`, `ended`, `disconnected`, `timeout` (client-side connection timeout, not a server event), `cancelled` (see gaps below — not currently backed by a server event).
-
----
-
-#### `receive_message`
-
-**Purpose:**
-Delivers a message sent by the partner.
-
-**Payload:**
-```json
-{ "message": "plain text or JSON-encoded {text, replyTo} envelope" }
+```text
+A: send_message("hi")        → B ← receive_message {message: "hi"}
+A: typing / typing_stop      → B ← partner_typing / partner_typing_stop
 ```
 
----
+### Skip
 
-#### `partner_typing` / `partner_typing_stop`
+```text
+A: skip_chat()
+A: ← chat_ended {reason: "skipped", by: "self"}
+B: ← chat_ended {reason: "skipped", by: "partner"}
+A: ← match_found {partner: C}   or   queued {partner: null}
+B: ← match_found {partner: D}   or   queued {partner: null}
+```
 
-**Purpose:**
-Mirrors the partner's typing state. Payload: none. Client auto-clears the "typing" indicator after 4s if no `partner_typing_stop` arrives (defensive timeout, not a guaranteed server contract).
+A and B won't be matched with each other again for 20s.
 
----
+### Matched with someone who just left
 
-#### `connect` / `connect_error`
+The server only learns about a closed connection when its disconnect is processed, so a user who left a moment ago can still be matched. In that case the client gets `match_found` followed almost immediately by `chat_ended {reason: "disconnected", by: "partner"}`. Handle it like any other partner disconnect.
 
-Standard Socket.IO lifecycle events, used to drive the `join_chat` (re)emission logic and surface connection failures. See [Connection](#connection) above for `connect_error` reason handling.
+### End
 
----
+```text
+A: end_chat()
+A: ← chat_ended {reason: "ended", by: "self"}
+B: ← chat_ended {reason: "ended", by: "partner"}      (B is not requeued)
+```
 
-## 4. Not Yet Implemented / Planned
+### Partner disconnects
 
-These are referenced by client-side state, UI, or planning docs (`plans/mvp-todo-list.md`), but have **no corresponding backend call today**. Flagging them explicitly since this doc is meant to seed a v2 backend/API contract.
+```text
+A's app goes to the background / closes / loses network
+B: ← chat_ended {reason: "disconnected", by: "partner"}   (B is not requeued)
+A: nothing from the server (A's socket is gone)
+```
 
-- **Explicit "cancel search" / "leave queue"** — there's no dedicated event to leave the matchmaking queue without also disconnecting the socket entirely. `plans/mvp-todo-list.md` calls this out directly ("emit leave event *if supported*"). Today, cancelling out of search just disconnects the socket.
-- **Report reason/category** — `report_user` carries no payload (no reason, no evidence, no message IDs). If v2 wants structured moderation, this needs a real request/response contract, e.g.:
-  ```json
-  // Not yet provided — proposed shape only
-  { "reason": "harassment", "message_ids": ["..."] }
-  ```
-- **Report acknowledgment** — no server response/ack is handled for `report_user`; the client can't currently tell the user whether a report was actually received.
-- **Entitlements / paywall API** — `src/entitlements/store.ts` has client-side state for `isPaid` and `hasSavedChats`, but no API call populates or persists either value anywhere in the codebase. Not yet provided:
-  - Fetch entitlement/subscription status
-  - Purchase/restore endpoints
-  - Saved-chats persistence (list/get/delete past conversations) — there is currently no chat history persistence at all; chat state is in-memory only and lost on leaving the screen.
-- **Logout / device revocation** — there's no endpoint to invalidate tokens or unlink a device; tokens are only ever replaced (via refresh) or left to expire.
-- **Push notifications** — no registration endpoint (e.g. for match-found or message-received notifications while backgrounded).
-- **User/profile data** — the app is fully anonymous/device-based today; there is no endpoint for any user-identifying profile beyond the opaque `device_id`.
+## Connection lifecycle rules
 
----
+The OS closes the socket whenever the app goes to the background, the screen locks, or the app is closed. The server then **ends the chat or search immediately** and doesn't keep any state for that connection.
 
-## Appendix: Auth & Session Notes for v2
+1. **The server never resumes a session.** After any reconnect, the client is a new, idle user: not queued, not in a chat.
+2. **Reset the chat UI on the client's own `disconnect` event**, and when the app returns to the foreground, whether or not the socket had to reconnect. The server can't tell a closed connection that its chat ended.
+3. **On `chat_ended` with `by: "partner"`** (`ended` or `disconnected`), call `join_chat` again, or offer to. Only a skip requeues automatically.
+4. **On `error {reason: "not_in_chat"}`**, reset the chat UI. It's the backup for a missed disconnect.
+5. **Use an `auth` callback** so reconnects send a fresh access token. The access token lasts 30 minutes, and an expired one is refused with `401 invalid_token`: refresh the token, then reconnect.
+6. **Back off** on `429 rate_limited` and `503 unavailable`. The connect limit allows 20 quick reconnects per device, then about 6 per minute, which covers normal background/foreground switching.
 
-- Auth is device-based, not account-based: `device_id` is the only persistent identity, generated/stored client-side (`expo-secure-store`) and echoed back by the server on first verification.
-- Access tokens are short-lived; refresh tokens are long-lived. The client proactively refreshes before an expired access token would be used (see `useSession`/`recoverAndResume`), rather than reacting to a 401.
-- The same access token used for REST calls is passed as `auth.token` on the Socket.IO handshake — there is one shared token, not separate REST/WS credentials.
+## Rate limits
+
+HTTP limits are **per client IP** (`X-Real-IP` / `X-Forwarded-For`). Socket limits are **per device** (`device_id` from the token). A token bucket allows a burst up to its capacity, then refills at the given rate.
+
+| Endpoint / event | Algorithm | Limit |
+|---|---|---|
+| `POST /captcha/get-started` | sliding window | 20 per 60s |
+| `POST /captcha/verify` | token bucket | burst 5, then 1 per ~30s |
+| `POST /jwt/refresh` | sliding window | 15 per 60s |
+| socket connect | token bucket | burst 20, then 1 per ~10s |
+| `join_chat` | token bucket | burst 5, then 1 per ~15s |
+| `send_message` | token bucket | burst 20, then 2 per second |
+| `skip_chat` | token bucket | burst 3, then 1 per ~30s |
+| `end_chat` | token bucket | burst 5, then 1 per ~12s |
+| `typing` | token bucket | burst 10, then 1 per 5s |
+| `typing_stop` | token bucket | burst 50, then 1 per 5s |
+
+The values come from `RateLimitSettings` in `src/anonyverse/core/settings.py`. Each deployment can override them through environment variables.
+
+## Known issues
+
+These are real behaviours today. Clients should handle them until they're fixed.
+
+- **`join_chat` with no allowed tags** raises on the server, and no ack is sent. Always use an ack timeout.
+- **A server-side matching error** can make `join_chat` ack `queued` even though the user isn't in the queue, so no `match_found` will ever come. Consider a search timeout in the app, after which it calls `join_chat` again.

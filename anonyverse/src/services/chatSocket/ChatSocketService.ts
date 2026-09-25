@@ -1,13 +1,30 @@
-import type { ChatEndedEvent, JoinChatAck, MatchFoundEvent, ReceiveMessageEvent, ServerErrorEvent } from './types';
+import type {
+  ChatEndedEvent,
+  JoinChatAck,
+  MatchFoundEvent,
+  QueuedEvent,
+  ReceiveMessageEvent,
+  ServerErrorEvent,
+} from './types';
 
 
 export interface ChatSocketService {
-  connect(accessToken: string, topic: string | null): Promise<void>;
+  /**
+   * Opens a fresh socket, closing any previous one first. The server never
+   * resumes a session, so calling this again is how a reconnect happens.
+   * `getAccessToken` is read on every handshake, so it always sends the
+   * current token.
+   */
+  connect(getAccessToken: () => string | null): Promise<void>;
 
+  /** Rejects with a JoinChatError if no ack arrives in time or the socket drops first. */
   joinChat(tags: string[], mood: string, optedIn: boolean): Promise<JoinChatAck>;
 
 
   onMatchFound(handler: (event: MatchFoundEvent) => void): () => void;
+
+  /** After a skip the server requeues both sides itself; this says no one was free yet. */
+  onQueued(handler: (event: QueuedEvent) => void): () => void;
 
   sendMessage(text: string): void;
 

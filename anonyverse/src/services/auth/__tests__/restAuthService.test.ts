@@ -82,3 +82,48 @@ describe('restAuthService.getStarted', () => {
     expect(outcome).toEqual({ status: 'verification_required' });
   });
 });
+
+describe('restAuthService.refresh', () => {
+  const TOKEN = {
+    access_token: 'a2',
+    refresh_token: 'r2',
+    access_token_expiry: 1800,
+    refresh_token_expiry: 14400,
+  };
+
+  it('returns the new token pair', async () => {
+    mockFetchOnce(TOKEN);
+
+    const outcome = await restAuthService.refresh('r1');
+
+    expect(outcome).toEqual({ status: 'refreshed', token: TOKEN });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/v1\/jwt\/refresh$/),
+      expect.objectContaining({ body: JSON.stringify({ refresh_token: 'r1' }) }),
+    );
+  });
+
+  it('returns reauth_required on 401 (revoked or expired refresh token)', async () => {
+    mockFetchOnce({ detail: 'Refresh token has been revoked' }, 401);
+
+    expect(await restAuthService.refresh('r1')).toEqual({ status: 'reauth_required' });
+  });
+
+  it.each([429, 500, 503])('returns failed (retryable) on %i', async status => {
+    mockFetchOnce({ detail: 'x' }, status);
+
+    expect(await restAuthService.refresh('r1')).toMatchObject({ status: 'failed' });
+  });
+
+  it.each([
+    ['a missing access_token', { ...TOKEN, access_token: undefined }],
+    ['an empty refresh_token', { ...TOKEN, refresh_token: '' }],
+    ['a non-numeric expiry', { ...TOKEN, access_token_expiry: '1800' }],
+    ['a zero expiry', { ...TOKEN, refresh_token_expiry: 0 }],
+    ['a non-object body', null],
+  ])('returns failed for a 200 with %s', async (_label, body) => {
+    mockFetchOnce(body);
+
+    expect(await restAuthService.refresh('r1')).toMatchObject({ status: 'failed' });
+  });
+});
