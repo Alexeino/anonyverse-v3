@@ -53,9 +53,9 @@ const LOW_TOPICS: Topic[] = [
  * Per-mood content for the Topics screen — matches the Anonyverse Figma
  * frames "Mili Topics" (node 10:865, mood: 'good') and "Milo Topics"
  * (node 10:903, mood: 'low'). The opt-in banner ("Help someone lift their
- * mood") only appears on the 'good' variant — per docs/api.md, join_chat's
- * optedIn flag is "shown as a banner on the happy topic-selection screen"
- * specifically, not the low-mood one.
+ * mood") only appears on the 'good' variant: join_chat's optedIn flag
+ * (docs/api.md) means "willing to be matched with low-mood users", which
+ * only makes sense to ask someone who isn't feeling low themselves.
  */
 const MOOD_CONTENT: Record<
   Mood,
@@ -111,10 +111,9 @@ const MOOD_CONTENT: Record<
 /**
  * Topics screen — matches the Anonyverse Figma frames "Mili Topics" /
  * "Milo Topics" (nodes 10:865 / 10:903), the step right after Mood Select.
- * Picking topics and tapping "Find someone" is meant to feed
- * join_chat(tags, mood, optedIn) per docs/api.md — matchmaking itself
- * (Finding a Connection) doesn't exist yet, so onFindSomeone is a
- * placeholder hand-off for now.
+ * Picking topics and tapping "Find someone" hands the selection to
+ * Finding a Connection, which feeds it to join_chat(tags, mood, optedIn)
+ * per docs/api.md.
  */
 export function TopicsScreen({ mood, onFindSomeone }: TopicsScreenProps) {
   const content = MOOD_CONTENT[mood];

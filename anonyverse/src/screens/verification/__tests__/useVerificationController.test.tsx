@@ -32,6 +32,7 @@ function makeAuthService(
   return {
     getStarted: jest.fn(),
     verify: jest.fn(verifyImpl),
+    refresh: jest.fn(),
   };
 }
 
@@ -63,6 +64,8 @@ function makeSessionStore(): SessionStore {
   return {
     getToken: jest.fn(() => null),
     setToken: jest.fn(),
+    isAccessTokenExpired: jest.fn(() => true),
+    isRefreshTokenExpired: jest.fn(() => true),
     clear: jest.fn(),
   };
 }

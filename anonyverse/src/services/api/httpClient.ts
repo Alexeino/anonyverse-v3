@@ -1,4 +1,4 @@
-import { env } from '../../config/env';
+import { env, isApiBaseUrlSecure } from '../../config/env';
 
 export class ApiError extends Error {
   status?: number;
@@ -19,6 +19,10 @@ export async function postJson<TResponse>(
   path: string,
   body: unknown,
 ): Promise<TResponse> {
+  if (!isApiBaseUrlSecure()) {
+    throw new ApiError('Refusing to send a request over an insecure API_BASE_URL');
+  }
+
   let response: Response;
 
   try {

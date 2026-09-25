@@ -1,13 +1,8 @@
 /**
- * Shapes for POST /api/v1/captcha/get-started, per docs/api.md
- * ("Reverse-engineered from the client app (anonyverse-v2)").
- * The live backend (verified 2026-09-09 against localhost:8000) returns
- * `token: null` rather than omitting it when unverified; `device` is
- * omitted in that case. It's also omitted when verified: true for an
- * already-known device (device_exists: true) — the response simply
- * confirms the device_id that was sent in the request rather than
- * repeating it, so callers must fall back to the request's device_id
- * when `device` is absent (see restAuthService.ts).
+ * Shapes for POST /api/v1/captcha/get-started, per docs/api.md. `token`
+ * is null when unverified. The contract has no `device` in this response
+ * — a known device is confirmed against the device_id sent in the
+ * request — but it's still read if present (see restAuthService.ts).
  */
 export interface GetStartedRequest {
   device_id: string | null;
@@ -46,14 +41,31 @@ export interface VerifyRequest {
 
 export interface VerifyResponse {
   success: boolean;
-  token?: AuthToken;
-  device?: {
+  token: AuthToken | null;
+  device: {
     device_id: string;
     platform: string;
     app_version: string;
-  };
+  } | null;
 }
 
 export type VerifyOutcome =
   | { status: 'authenticated'; deviceId: string; token: AuthToken }
   | { status: 'failed'; error?: unknown };
+
+/**
+ * POST /api/v1/jwt/refresh. Each refresh revokes the refresh token that
+ * was sent, so the returned pair must replace the stored one.
+ */
+export interface RefreshRequest {
+  refresh_token: string;
+}
+
+export type RefreshResponse = AuthToken;
+
+export type RefreshOutcome =
+  | { status: 'refreshed'; token: AuthToken }
+  /** 401: the refresh token was revoked or expired — only get-started/captcha can issue a new one. */
+  | { status: 'reauth_required' }
+  /** 429/5xx/network — worth retrying with backoff. */
+  | { status: 'failed'; error: unknown };

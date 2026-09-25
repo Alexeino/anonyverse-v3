@@ -6,6 +6,7 @@ export function createDevNoopChatSocketService(): ChatSocketService {
     connect: () => Promise.resolve(),
     joinChat: () => Promise.resolve({ ok: true, status: 'matched' }),
     onMatchFound: () => () => {},
+    onQueued: () => () => {},
     sendMessage: text => {
       console.log('[DevChat] sendMessage (no-op, nothing is listening):', text);
     },

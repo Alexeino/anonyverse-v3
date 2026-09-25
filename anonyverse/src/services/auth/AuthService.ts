@@ -1,4 +1,4 @@
-import type { GetStartedOutcome, VerifyOutcome } from './types';
+import type { GetStartedOutcome, RefreshOutcome, VerifyOutcome } from './types';
 
 /** Abstraction over the auth/bootstrap REST calls, so screens/hooks never call fetch directly. */
 export interface AuthService {
@@ -13,4 +13,7 @@ export interface AuthService {
    * token to verify the device as human and issue session tokens.
    */
   verify(deviceId: string | null, token: string): Promise<VerifyOutcome>;
+
+  /** POST /api/v1/jwt/refresh — exchanges a refresh token for a new access/refresh pair. */
+  refresh(refreshToken: string): Promise<RefreshOutcome>;
 }

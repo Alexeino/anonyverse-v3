@@ -22,6 +22,7 @@ const REASON_SUBTITLE: Record<RematchReason, string> = {
   you_skipped: 'You skipped the chat, finding a new one',
   partner_skipped: 'Your partner skipped you, looking for a new one',
   partner_ended: 'Your partner has ended the chat, finding a new partner',
+  reconnecting: 'You were disconnected, finding a new partner',
 };
 const DEFAULT_SUBTITLE = 'Looking for a new partner';
 

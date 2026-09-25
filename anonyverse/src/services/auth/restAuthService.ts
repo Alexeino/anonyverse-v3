@@ -3,9 +3,13 @@ import packageJson from '../../../package.json';
 import { ApiError, postJson } from '../api/httpClient';
 import type { AuthService } from './AuthService';
 import type {
+  AuthToken,
   GetStartedOutcome,
   GetStartedRequest,
   GetStartedResponse,
+  RefreshOutcome,
+  RefreshRequest,
+  RefreshResponse,
   VerifyOutcome,
   VerifyRequest,
   VerifyResponse,
@@ -17,10 +21,24 @@ function currentPlatform(): 'ios' | 'android' {
   return Platform.OS === 'ios' ? 'ios' : 'android';
 }
 
+function isAuthToken(value: unknown): value is AuthToken {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const token = value as Partial<Record<keyof AuthToken, unknown>>;
+  const isNonEmptyString = (v: unknown) => typeof v === 'string' && v.length > 0;
+  const isPositiveNumber = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  return (
+    isNonEmptyString(token.access_token) &&
+    isNonEmptyString(token.refresh_token) &&
+    isPositiveNumber(token.access_token_expiry) &&
+    isPositiveNumber(token.refresh_token_expiry)
+  );
+}
+
 /**
  * fetch-backed implementation of AuthService, calling the REST contract
- * documented in docs/api.md (verified live against localhost:8000 on
- * 2026-09-09 — see types.ts).
+ * documented in docs/api.md.
  */
 export const restAuthService: AuthService = {
   async getStarted(deviceId: string | null): Promise<GetStartedOutcome> {
@@ -36,10 +54,8 @@ export const restAuthService: AuthService = {
         request,
       );
 
-      // The backend only echoes `device` back when it's telling us a new
-      // device_id (e.g. first time this device is seen); for an
-      // already-known device it confirms verification without repeating
-      // the id we just sent it, so fall back to that.
+      // A known device is confirmed against the device_id we just sent, so
+      // fall back to that when the response doesn't repeat it.
       const authenticatedDeviceId = response.device?.device_id ?? deviceId;
 
       if (response.verified && response.token && authenticatedDeviceId) {
@@ -83,6 +99,25 @@ export const restAuthService: AuthService = {
 
       return { status: 'failed' };
     } catch (error) {
+      return { status: 'failed', error };
+    }
+  },
+
+  async refresh(refreshToken: string): Promise<RefreshOutcome> {
+    const request: RefreshRequest = { refresh_token: refreshToken };
+
+    try {
+      const token = await postJson<RefreshResponse>('/api/v1/jwt/refresh', request);
+      // postJson only casts the body; a malformed token stored as-is would
+      // make the expiry checks compute NaN and never refresh again.
+      if (!isAuthToken(token)) {
+        return { status: 'failed', error: new Error('Malformed /jwt/refresh response') };
+      }
+      return { status: 'refreshed', token };
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        return { status: 'reauth_required' };
+      }
       return { status: 'failed', error };
     }
   },
