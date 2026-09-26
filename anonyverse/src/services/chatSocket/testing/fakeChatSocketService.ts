@@ -49,6 +49,7 @@ export function makeFakeChatSocketService({
   const sendTypingStop = jest.fn();
   const sendSkipChat = jest.fn();
   const sendEndChat = jest.fn();
+  const getSocketId = jest.fn((): string | null => 'sid-1');
   // Like the real service, closing the socket ourselves is not a lost connection.
   const disconnect = jest.fn();
 
@@ -68,6 +69,7 @@ export function makeFakeChatSocketService({
     onChatEnded: chatEnded.subscribe,
     onServerError: serverError.subscribe,
     onConnectionLost: handler => connectionLost.subscribe(() => handler()),
+    getSocketId,
     disconnect,
   };
 
@@ -80,6 +82,7 @@ export function makeFakeChatSocketService({
     sendTypingStop,
     sendSkipChat,
     sendEndChat,
+    getSocketId,
     disconnect,
     emitMatchFound: (event: MatchFoundEvent = { partner: 'partner-2' }) => matchFound.emit(event),
     emitQueued: () => queued.emit({ partner: null }),

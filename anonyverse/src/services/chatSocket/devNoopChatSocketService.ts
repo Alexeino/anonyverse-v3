@@ -24,6 +24,7 @@ export function createDevNoopChatSocketService(): ChatSocketService {
     onChatEnded: () => () => {},
     onServerError: () => () => {},
     onConnectionLost: () => () => {},
+    getSocketId: () => 'dev-socket',
     disconnect: () => {},
   };
 }

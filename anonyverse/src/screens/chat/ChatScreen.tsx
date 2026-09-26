@@ -19,11 +19,14 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
 import { colors, fontFamily, radii, spacing, typography } from '../../design/tokens';
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
+import type { ReportService } from '../../services/report/ReportService';
+import { restReportService } from '../../services/report/restReportService';
 import { tokenProvider } from '../../services/session/tokenProvider';
 import type { TopicsSelection } from '../topics/TopicsScreen';
-import { MAX_INPUT_LENGTH, useChatController, type ChatMessage } from './useChatController';
+import { MAX_INPUT_LENGTH, useChatController, type ChatMessage, type ReportSnackbar } from './useChatController';
 import { FindingNewMatchModal } from './FindingNewMatchModal';
 import { LeaveChatConfirmModal } from './LeaveChatConfirmModal';
+import { ReportSheet } from './ReportSheet';
 
 const miliHappy = require('../../assets/images/mili-happy.png');
 const INTRO_CARD_GAP = 12;
@@ -35,9 +38,17 @@ export interface ChatScreenProps {
   onLeave: () => void;
   /** The session expired and couldn't be refreshed — the app must go back through Entry. */
   onReauthRequired: () => void;
+  /** Defaults to the real REST service; the DEV Menu preview passes a no-op. */
+  reportService?: ReportService;
 }
 
-export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequired }: ChatScreenProps) {
+export function ChatScreen({
+  chatSocketService,
+  selection,
+  onLeave,
+  onReauthRequired,
+  reportService = restReportService,
+}: ChatScreenProps) {
   const {
     messages,
     inputValue,
@@ -62,7 +73,13 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
     handleRequestLeave,
     handleDismissLeaveConfirm,
     handleConfirmLeave,
-  } = useChatController(chatSocketService, selection, tokenProvider, onLeave, onReauthRequired);
+    showReportSheet,
+    reportSubmitting,
+    reportSnackbar,
+    handleOpenReport,
+    handleDismissReport,
+    handleSubmitReport,
+  } = useChatController(chatSocketService, selection, tokenProvider, onLeave, onReauthRequired, reportService);
 
   const handleSavePartnerPlaceholder = () => {
     Alert.alert('Coming soon', 'Saving a partner to chat again later will be available soon.');
@@ -76,17 +93,13 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
   const [introCardHeight, setIntroCardHeight] = useState(0);
   const sendButtonScale = useRef(new Animated.Value(1)).current;
 
-  // The rematch and leave overlays are plain Views drawn over the chat, so the
-  // input underneath stays focused and the keyboard would stay up on a device.
+  // The rematch, leave and report overlays are plain Views drawn over the chat,
+  // so the input underneath stays focused and the keyboard would stay up on a device.
   useEffect(() => {
-    if (rematchState === 'rematching' || showLeaveConfirm) {
+    if (rematchState === 'rematching' || showLeaveConfirm || showReportSheet) {
       Keyboard.dismiss();
     }
-  }, [rematchState, showLeaveConfirm]);
-
-  const handleReport = () => {
-    console.log('[Chat] Report tapped — not implemented yet.');
-  };
+  }, [rematchState, showLeaveConfirm, showReportSheet]);
 
   const handleDismissIntroCard = () => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -128,7 +141,7 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
 
           <View style={styles.headerActions}>
             <Pressable
-              onPress={handleReport}
+              onPress={handleOpenReport}
               accessibilityRole="button"
               accessibilityLabel="Report this user"
               style={({ pressed }) => [styles.reportButton, pressed && styles.pressed]}
@@ -247,7 +260,7 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
           statusMessage={rematchStatusMessage}
           statusIsError={rematchGaveUp}
           onStopSearching={handleStopSearching}
-          onReport={handleReport}
+          onReport={handleOpenReport}
         />
       ) : null}
 
@@ -258,6 +271,16 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
           onLeaveChat={handleConfirmLeave}
         />
       ) : null}
+
+      {showReportSheet ? (
+        <ReportSheet
+          submitting={reportSubmitting}
+          onDismiss={handleDismissReport}
+          onSubmit={handleSubmitReport}
+        />
+      ) : null}
+
+      {reportSnackbar ? <ReportResultSnackbar snackbar={reportSnackbar} bottomInset={bottomInset} /> : null}
     </View>
   );
 }
@@ -356,6 +379,36 @@ function TypingBubble() {
         <Animated.View style={[styles.typingDot, dotStyle(dot2)]} />
         <Animated.View style={[styles.typingDot, dotStyle(dot3)]} />
       </View>
+    </View>
+  );
+}
+
+/** Drawn above every overlay, so it shows alongside the "finding someone new" modal that follows a report. */
+function ReportResultSnackbar({ snackbar, bottomInset }: { snackbar: ReportSnackbar; bottomInset: number }) {
+  const opacity = useRef(new Animated.Value(0)).current;
+  const translateY = useRef(new Animated.Value(16)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, { toValue: 1, duration: 200, useNativeDriver: true }),
+      Animated.spring(translateY, { toValue: 0, useNativeDriver: true, friction: 8, tension: 70 }),
+    ]).start();
+  }, [opacity, translateY]);
+
+  return (
+    <View style={[styles.snackbarWrap, { bottom: bottomInset + 16 }]} pointerEvents="none">
+      <Animated.View
+        style={[
+          styles.snackbar,
+          snackbar.tone === 'error' && styles.snackbarError,
+          { opacity, transform: [{ translateY }] },
+        ]}
+        accessibilityRole="alert"
+        accessibilityLiveRegion="polite"
+      >
+        <Text style={styles.snackbarCheck}>{snackbar.tone === 'success' ? '✓' : '!'}</Text>
+        <Text style={styles.snackbarText}>{snackbar.text}</Text>
+      </Animated.View>
     </View>
   );
 }
@@ -536,6 +589,42 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   unavailableToastText: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 13,
+    color: colors.white,
+  },
+  snackbarWrap: {
+    position: 'absolute',
+    left: spacing.screenHorizontal,
+    right: spacing.screenHorizontal,
+    zIndex: 30,
+    alignItems: 'center',
+  },
+  snackbar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderRadius: 20,
+    backgroundColor: colors.ink,
+    shadowColor: colors.buttonShadow,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 1,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  snackbarError: {
+    backgroundColor: colors.danger,
+    shadowColor: colors.dangerButtonShadow,
+  },
+  snackbarCheck: {
+    fontFamily: fontFamily.bold,
+    fontSize: 15,
+    color: colors.white,
+  },
+  snackbarText: {
+    flexShrink: 1,
     fontFamily: fontFamily.semiBold,
     fontSize: 13,
     color: colors.white,

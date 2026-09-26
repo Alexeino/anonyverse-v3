@@ -150,6 +150,72 @@ Response `200`:
 | `503` | `Service unavailable` | Retry with backoff |
 | `500` | `Internal server error` | Retry with backoff |
 
+### `POST /api/v1/report/report-user`
+
+Report the user you're chatting with, or the user who just skipped you. The client never names who is being reported: the server works it out from the reporter's chat state (see [Who gets reported](#who-gets-reported)).
+
+Request:
+
+```json
+{
+  "token": "<access token>",          // required; the access token, sent in the body (not a header)
+  "report_type": "harassment",        // required; see the table below
+  "description": "free text",         // optional; may be omitted or null
+  "reporting_user_sid": "<socket.id>" // required; your own current socket.id
+}
+```
+
+| `report_type` | Meaning |
+|---|---|
+| `harassment` | Harassment |
+| `sexual_content` | Sexual content (**pending on the backend** — rejected with `422` until it ships) |
+| `hate_speech` | Hate speech |
+| `threat` | Threats |
+| `scam_or_spam` | Scam or spam |
+| `other` | Anything else (use `description` to explain) |
+
+- `token` must be an **access** token. A refresh token is rejected with `401`.
+- `reporting_user_sid` is the client's own `socket.id` for the **current** connection, not the partner's sid from `match_found`. Send it even when you're reporting someone who skipped you.
+
+Response `200`:
+
+```json
+{
+  "report_id": "3f2c9a7e-…",   // uuid4 string
+  "report_type": "harassment"
+}
+```
+
+| Status | `detail` | Cause | What the client should do |
+|---|---|---|---|
+| `401` | `Invalid or expired token` | Token expired, malformed, or a refresh token | Refresh the token, then retry |
+| `403` | `reporting_user_sid does not belong to this device.` | `reporting_user_sid` isn't a live connection of the device in the token (wrong sid, or the socket has disconnected) | Retry with the current `socket.id` while connected |
+| `404` | `No paired device found for the reporting user.` | Nobody to report: not in a chat, and not skipped in the last 5 minutes | Tell the user the report couldn't be sent |
+| `422` | validation error | Missing field or unknown `report_type` | Fix the request |
+| `500` | — | The report couldn't be stored | Retry with backoff |
+
+#### Who gets reported
+
+The server checks, in this order:
+
+1. **You were skipped in the last 5 minutes** → the device that skipped you is reported.
+2. **You're in a chat** → your current partner's device is reported. `reporting_user_sid` must be your live connection.
+3. Otherwise → `404`.
+
+So a report works:
+
+| Situation | Can report? |
+|---|---|
+| In a chat, reporting the current partner | Yes |
+| Your partner skipped you (within 5 minutes) | Yes, the partner who skipped you is reported |
+| You skipped your partner | **No**: report **before** calling `skip_chat` |
+| After `end_chat` (either side) | **No**: report **before** calling `end_chat` |
+| After `chat_ended {reason: "disconnected"}` | **No** |
+
+Recommended UI flow: when the user taps "Report" during a chat, send the report first, wait for the response, then call `skip_chat` or `end_chat`. Reporting does not end the chat by itself.
+
+Each call creates a new report. The server doesn't deduplicate, so don't retry a request that already returned `200`.
+
 ### `GET /api/v1/health`
 
 Not rate limited. Response `200`: `{"status": "ok", "db": "ok" | "error", "cache": "ok" | "error"}`.
