@@ -52,11 +52,12 @@ export interface UseChatControllerResult {
   rematchGaveUp: boolean;
   /** Whether the "you can't leave mid-chat" confirmation is showing. */
   showLeaveConfirm: boolean;
-  /** Opens the leave confirmation — the header's leave button (iOS has no hardware back). */
+  /** Opens the leave confirmation. */
   handleRequestLeave: () => void;
   handleDismissLeaveConfirm: () => void;
   /** Emits `end_chat`, disconnects, and calls onLeave — the actual "Leave chat" action. */
   handleConfirmLeave: () => void;
+  handleBack: () => void;
 }
 
 const SKIP_UNLOCK_SECONDS = 10;
@@ -141,6 +142,7 @@ export function useChatController(
   tokenProvider: TokenProvider,
   onLeave: () => void,
   onReauthRequired: () => void,
+  backHandlerEnabled = true,
 ): UseChatControllerResult {
   const [messages, setMessages] = useState<ChatMessage[]>(() => [
     { id: nextMessageId(), sender: 'system', text: CONNECTED_MESSAGE },
@@ -497,26 +499,33 @@ export function useChatController(
     onLeave();
   }, [abortRejoin, onLeave]);
 
+  const handleBack = useCallback(() => {
+    if (rematchState === 'rematching') {
+      // Same exit as the "Stop searching" button — no partner to save,
+      // so back just leaves the same way that button already does.
+      handleStopSearching();
+      return;
+    }
+    if (showLeaveConfirm) {
+      // Back dismisses the confirmation instead of doing nothing, so the
+      // user is never stuck with no way to cancel out of the popup.
+      setShowLeaveConfirm(false);
+      return;
+    }
+    setShowLeaveConfirm(true);
+  }, [rematchState, showLeaveConfirm, handleStopSearching]);
+
   useEffect(() => {
+    if (!backHandlerEnabled) {
+      return;
+    }
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (rematchState === 'rematching') {
-        // Same exit as the "Stop searching" button — no partner to save,
-        // so back just leaves the same way that button already does.
-        handleStopSearching();
-        return true;
-      }
-      if (showLeaveConfirm) {
-        // Back dismisses the confirmation instead of doing nothing, so the
-        // user is never stuck with no way to cancel out of the popup.
-        setShowLeaveConfirm(false);
-        return true;
-      }
-      setShowLeaveConfirm(true);
+      handleBack();
       return true;
     });
 
     return () => subscription.remove();
-  }, [rematchState, showLeaveConfirm, handleStopSearching]);
+  }, [backHandlerEnabled, handleBack]);
 
   return {
     messages,
@@ -542,5 +551,6 @@ export function useChatController(
     handleRequestLeave,
     handleDismissLeaveConfirm,
     handleConfirmLeave,
+    handleBack,
   };
 }

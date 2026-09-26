@@ -6,6 +6,7 @@ import {
   Keyboard,
   LayoutAnimation,
   PanResponder,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -27,6 +28,9 @@ import { LeaveChatConfirmModal } from './LeaveChatConfirmModal';
 
 const miliHappy = require('../../assets/images/mili-happy.png');
 const INTRO_CARD_GAP = 12;
+const EDGE_SWIPE_WIDTH = 20;
+const EDGE_SWIPE_TRIGGER = 60;
+const EDGE_SWIPE_VELOCITY = 0.5;
 
 export interface ChatScreenProps {
   chatSocketService: ChatSocketService;
@@ -35,9 +39,18 @@ export interface ChatScreenProps {
   onLeave: () => void;
   /** The session expired and couldn't be refreshed — the app must go back through Entry. */
   onReauthRequired: () => void;
+  onOpenSettings: () => void;
+  isFocused?: boolean;
 }
 
-export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequired }: ChatScreenProps) {
+export function ChatScreen({
+  chatSocketService,
+  selection,
+  onLeave,
+  onReauthRequired,
+  onOpenSettings,
+  isFocused = true,
+}: ChatScreenProps) {
   const {
     messages,
     inputValue,
@@ -59,10 +72,17 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
     rematchStatusMessage,
     rematchGaveUp,
     showLeaveConfirm,
-    handleRequestLeave,
     handleDismissLeaveConfirm,
     handleConfirmLeave,
-  } = useChatController(chatSocketService, selection, tokenProvider, onLeave, onReauthRequired);
+    handleBack,
+  } = useChatController(
+    chatSocketService,
+    selection,
+    tokenProvider,
+    onLeave,
+    onReauthRequired,
+    isFocused,
+  );
 
   const handleSavePartnerPlaceholder = () => {
     Alert.alert('Coming soon', 'Saving a partner to chat again later will be available soon.');
@@ -137,12 +157,12 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
             </Pressable>
 
             <Pressable
-              onPress={handleRequestLeave}
+              onPress={onOpenSettings}
               accessibilityRole="button"
-              accessibilityLabel="Leave chat"
+              accessibilityLabel="Settings"
               style={({ pressed }) => [styles.reportButton, pressed && styles.pressed]}
             >
-              <Text style={styles.leaveGlyph}>{'✕'}</Text>
+              <Text style={styles.settingsGlyph}>{'⚙'}</Text>
             </Pressable>
           </View>
         </View>
@@ -233,6 +253,8 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
         </KeyboardStickyView>
       </SafeAreaView>
 
+      {Platform.OS === 'ios' ? <EdgeSwipeBack onBack={handleBack} /> : null}
+
       {skipUnavailableMessage ? (
         <View style={styles.unavailableToastWrap} pointerEvents="none">
           <View style={styles.unavailableToast}>
@@ -260,6 +282,25 @@ export function ChatScreen({ chatSocketService, selection, onLeave, onReauthRequ
       ) : null}
     </View>
   );
+}
+
+function EdgeSwipeBack({ onBack }: { onBack: () => void }) {
+  const onBackRef = useRef(onBack);
+  onBackRef.current = onBack;
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_evt, gesture) =>
+        gesture.dx > 10 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+      onPanResponderRelease: (_evt, gesture) => {
+        if (gesture.dx > EDGE_SWIPE_TRIGGER || gesture.vx > EDGE_SWIPE_VELOCITY) {
+          onBackRef.current();
+        }
+      },
+    }),
+  ).current;
+
+  return <View style={styles.edgeSwipe} {...panResponder.panHandlers} />;
 }
 
 function IntroCard({ onDismiss }: { onDismiss: () => void }) {
@@ -544,10 +585,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: colors.danger,
   },
-  leaveGlyph: {
-    fontFamily: fontFamily.semiBold,
-    fontSize: 15,
+  settingsGlyph: {
+    fontSize: 16,
     color: colors.ink,
+  },
+  edgeSwipe: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: EDGE_SWIPE_WIDTH,
   },
   threadArea: {
     flex: 1,

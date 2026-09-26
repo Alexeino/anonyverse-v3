@@ -15,9 +15,15 @@ export class ApiError extends Error {
  * HTTP client entry, and RN's built-in fetch is sufficient for the plain
  * JSON REST calls in docs/api.md.
  */
+export interface PostJsonOptions {
+  /** Access token sent as `Authorization: Bearer <token>` for authenticated routes. */
+  accessToken?: string;
+}
+
 export async function postJson<TResponse>(
   path: string,
   body: unknown,
+  options: PostJsonOptions = {},
 ): Promise<TResponse> {
   if (!isApiBaseUrlSecure()) {
     throw new ApiError('Refusing to send a request over an insecure API_BASE_URL');
@@ -25,10 +31,15 @@ export async function postJson<TResponse>(
 
   let response: Response;
 
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (options.accessToken) {
+    headers.Authorization = `Bearer ${options.accessToken}`;
+  }
+
   try {
     response = await fetch(`${env.apiBaseUrl}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(body),
     });
   } catch (error) {

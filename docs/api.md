@@ -156,6 +156,44 @@ Not rate limited. Response `200`: `{"status": "ok", "db": "ok" | "error", "cache
 
 (`/docs`, `/docs/login` and `/api/v1/jwt/docs/token` are internal and serve the Swagger UI. Clients don't use them.)
 
+### `POST /api/v1/feedback`
+
+**Purpose:**
+Submits text feedback about the app from a verified device (see `src/services/feedback/restFeedbackService.ts`).
+
+**Auth:** `Authorization: Bearer <access_token>`. The device is taken from the token — the request never carries a `device_id`. `platform` and `app_version` are copied server-side from the device record.
+
+**Request:**
+```json
+{
+  "type": "BUG",
+  "message": "The chat screen freezes.",
+  "rating": 2,
+  "screen": "ChatScreen",
+  "os_version": "15"
+}
+```
+- `type`: `BUG` | `FEATURE_REQUEST` | `IMPROVEMENT` | `GENERAL`
+- `message`: 1–2000 characters after trimming
+- `rating`: optional, 1–5
+- `screen`, `os_version`: optional, max 50 characters
+
+**Response (201):**
+```json
+{
+  "id": 1,
+  "status": "NEW",
+  "created_at": "2026-09-26T00:00:00Z"
+}
+```
+
+**Possible outcomes:**
+- 201 → saved with `status: NEW`.
+- 401 → missing/expired/invalid token, or the device no longer exists. The app asks the user to restart.
+- 403 → device is blocked.
+- 422 → invalid input.
+- 429 → rate limited (5 per 10 minutes per IP).
+
 ## Socket connection
 
 ```ts

@@ -142,19 +142,32 @@ function Harness({
   onLeave,
   onReauthRequired,
   onReady,
+  backHandlerEnabled,
 }: {
   service: ChatSocketService;
   tokenProvider: TokenProvider;
   onLeave: () => void;
   onReauthRequired: () => void;
   onReady: (result: ReturnType<typeof useChatController>) => void;
+  backHandlerEnabled?: boolean;
 }) {
-  const result = useChatController(service, TEST_SELECTION, tokenProvider, onLeave, onReauthRequired);
+  const result = useChatController(
+    service,
+    TEST_SELECTION,
+    tokenProvider,
+    onLeave,
+    onReauthRequired,
+    backHandlerEnabled,
+  );
   onReady(result);
   return null;
 }
 
-async function render(service: ChatSocketService, tokenResults?: AccessTokenResult | AccessTokenResult[]) {
+async function render(
+  service: ChatSocketService,
+  tokenResults?: AccessTokenResult | AccessTokenResult[],
+  backHandlerEnabled?: boolean,
+) {
   const onLeave = jest.fn();
   const onReauthRequired = jest.fn();
   const { tokenProvider } = makeFakeTokenProvider(tokenResults);
@@ -168,6 +181,7 @@ async function render(service: ChatSocketService, tokenResults?: AccessTokenResu
         tokenProvider={tokenProvider}
         onLeave={onLeave}
         onReauthRequired={onReauthRequired}
+        backHandlerEnabled={backHandlerEnabled}
         onReady={result => {
           latest = result;
         }}
@@ -420,6 +434,12 @@ describe('useChatController', () => {
     expect(fake.disconnect).toHaveBeenCalled();
     expect(harness.onLeave).toHaveBeenCalledTimes(1);
     expect(harness.latest.showLeaveConfirm).toBe(false);
+  });
+
+  it('registers no hardware back listener while backHandlerEnabled is false (e.g. Feedback pushed over the chat)', async () => {
+    await render(makeChatSocketService().service, undefined, false);
+
+    expect(BackHandler.addEventListener).not.toHaveBeenCalled();
   });
 
   it('match_found while already chatting resets the thread and clears rematchState', async () => {
