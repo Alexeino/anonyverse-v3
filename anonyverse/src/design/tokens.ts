@@ -39,6 +39,12 @@ export const colors = {
   warning: '#C24444',
   danger: '#A32B4E',
   dangerBadgeBackground: '#FBEDF1',
+  dangerButtonShadow: 'rgba(163, 43, 78, 0.28)',
+  sheetScrim: 'rgba(50, 21, 101, 0.3)',
+  sheetShadow: 'rgba(50, 21, 101, 0.24)',
+  softChipBackground: 'rgba(50, 21, 101, 0.06)',
+  softChipText: '#4B2C82',
+  infoPanelBackground: '#F7F3FB',
 } as const;
 
 export const fontFamily = {

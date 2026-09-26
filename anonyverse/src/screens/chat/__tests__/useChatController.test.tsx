@@ -11,6 +11,8 @@ import type {
   ReceiveMessageEvent,
   ServerErrorEvent,
 } from '../../../services/chatSocket/types';
+import type { ReportService } from '../../../services/report/ReportService';
+import type { ReportOutcome, ReportType, ReportUserParams } from '../../../services/report/types';
 import type { AccessTokenResult, TokenProvider } from '../../../services/session/tokenProvider';
 import type { TopicsSelection } from '../../topics/TopicsScreen';
 import { useChatController } from '../useChatController';
@@ -68,6 +70,7 @@ function makeChatSocketService() {
   const sendSkipChat = jest.fn();
   const sendEndChat = jest.fn();
   const disconnect = jest.fn();
+  const getSocketId = jest.fn((): string | null => 'sid-1');
   const joinChat = jest.fn((): Promise<JoinChatAck> => Promise.resolve({ ok: true, status: 'matched' }));
   const connect = jest.fn((_getAccessToken: () => string | null) => Promise.resolve());
 
@@ -111,6 +114,7 @@ function makeChatSocketService() {
       connectionLostHandlers.add(handler);
       return () => connectionLostHandlers.delete(handler);
     },
+    getSocketId,
     disconnect,
   };
 
@@ -122,6 +126,7 @@ function makeChatSocketService() {
     sendSkipChat,
     sendEndChat,
     disconnect,
+    getSocketId,
     joinChat,
     connect,
     emitQueued: () => queuedHandlers.forEach(handler => handler({ partner: null })),
@@ -141,23 +146,40 @@ function Harness({
   tokenProvider,
   onLeave,
   onReauthRequired,
+  reportService,
   onReady,
 }: {
   service: ChatSocketService;
   tokenProvider: TokenProvider;
   onLeave: () => void;
   onReauthRequired: () => void;
+  reportService: ReportService;
   onReady: (result: ReturnType<typeof useChatController>) => void;
 }) {
-  const result = useChatController(service, TEST_SELECTION, tokenProvider, onLeave, onReauthRequired);
+  const result = useChatController(service, TEST_SELECTION, tokenProvider, onLeave, onReauthRequired, reportService);
   onReady(result);
   return null;
 }
 
-async function render(service: ChatSocketService, tokenResults?: AccessTokenResult | AccessTokenResult[]) {
+function makeFakeReportService(outcomes: ReportOutcome | ReportOutcome[] = { status: 'reported', reportId: 'report-1' }) {
+  const queue = Array.isArray(outcomes) ? [...outcomes] : [outcomes];
+  const reportUser = jest.fn((_params: ReportUserParams) =>
+    // The last outcome repeats once the queue runs out.
+    Promise.resolve(queue.length > 1 ? queue.shift()! : queue[0]),
+  );
+  const reportService: ReportService = { reportUser };
+  return { reportService, reportUser };
+}
+
+async function render(
+  service: ChatSocketService,
+  tokenResults?: AccessTokenResult | AccessTokenResult[],
+  reportOutcomes?: ReportOutcome | ReportOutcome[],
+) {
   const onLeave = jest.fn();
   const onReauthRequired = jest.fn();
-  const { tokenProvider } = makeFakeTokenProvider(tokenResults);
+  const { tokenProvider, getFreshAccessToken } = makeFakeTokenProvider(tokenResults);
+  const { reportService, reportUser } = makeFakeReportService(reportOutcomes);
   let latest: ReturnType<typeof useChatController> | undefined;
   let renderer!: ReactTestRenderer.ReactTestRenderer;
 
@@ -168,6 +190,7 @@ async function render(service: ChatSocketService, tokenResults?: AccessTokenResu
         tokenProvider={tokenProvider}
         onLeave={onLeave}
         onReauthRequired={onReauthRequired}
+        reportService={reportService}
         onReady={result => {
           latest = result;
         }}
@@ -179,6 +202,8 @@ async function render(service: ChatSocketService, tokenResults?: AccessTokenResu
   return {
     onLeave,
     onReauthRequired,
+    getFreshAccessToken,
+    reportUser,
     renderer,
     get latest() {
       return latest!;
@@ -1083,6 +1108,316 @@ describe('useChatController', () => {
       id: expect.any(String),
       sender: 'partner',
       text: '{"not": "an envelope"}',
+    });
+  });
+
+  describe('reporting', () => {
+    async function openAndSubmit(harness: Awaited<ReturnType<typeof render>>, reportType: ReportType = 'harassment') {
+      act(() => {
+        harness.latest.handleOpenReport();
+      });
+      await act(async () => {
+        harness.latest.handleSubmitReport(reportType);
+      });
+    }
+
+    it('handleOpenReport opens the sheet and closes the leave-confirm popup', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        harness.latest.handleRequestLeave();
+      });
+      act(() => {
+        harness.latest.handleOpenReport();
+      });
+
+      expect(harness.latest.showReportSheet).toBe(true);
+      expect(harness.latest.showLeaveConfirm).toBe(false);
+    });
+
+    it('handleOpenReport does nothing while rematching — there is no partner to report', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        fake.emitChatEnded({ reason: 'skipped', by: 'self' });
+      });
+      act(() => {
+        harness.latest.handleOpenReport();
+      });
+
+      expect(harness.latest.showReportSheet).toBe(false);
+    });
+
+    it('sends the report with a fresh token and our own socket id, then ends the chat — never skip_chat', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        harness.latest.handleOpenReport();
+      });
+      await act(async () => {
+        harness.latest.handleSubmitReport('other', 'was rude');
+      });
+
+      expect(harness.reportUser).toHaveBeenCalledWith({
+        accessToken: 'access-token',
+        reportType: 'other',
+        description: 'was rude',
+        reportingUserSid: 'sid-1',
+      });
+      expect(fake.sendEndChat).toHaveBeenCalledTimes(1);
+      expect(harness.reportUser.mock.invocationCallOrder[0]).toBeLessThan(fake.sendEndChat.mock.invocationCallOrder[0]);
+      expect(fake.sendSkipChat).not.toHaveBeenCalled();
+      expect(harness.latest.showReportSheet).toBe(false);
+      expect(harness.latest.rematchState).toBe('rematching');
+      expect(harness.latest.rematchReason).toBe('you_skipped');
+    });
+
+    it('waits for chat_ended {ended, by: self} before joining again', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await openAndSubmit(harness);
+      expect(fake.joinChat).not.toHaveBeenCalled();
+
+      await act(async () => {
+        fake.emitChatEnded({ reason: 'ended', by: 'self' });
+      });
+
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+      expect(fake.connect).not.toHaveBeenCalled();
+      expect(harness.latest.rematchState).toBe('rematching');
+    });
+
+    it('shows a success snackbar alongside the rematch modal, which clears itself after 4s', async () => {
+      jest.useFakeTimers();
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await openAndSubmit(harness);
+      await act(async () => {
+        fake.emitChatEnded({ reason: 'ended', by: 'self' });
+      });
+
+      expect(harness.latest.rematchState).toBe('rematching');
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/Reported successfully/), tone: 'success' });
+
+      act(() => {
+        jest.advanceTimersByTime(4_000);
+      });
+      expect(harness.latest.reportSnackbar).toBeNull();
+    });
+
+    it('falls back to reconnecting when chat_ended does not arrive in time', async () => {
+      jest.useFakeTimers();
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await openAndSubmit(harness);
+      await act(async () => {
+        jest.advanceTimersByTime(3_000);
+      });
+
+      expect(fake.disconnect).toHaveBeenCalled();
+      expect(fake.connect).toHaveBeenCalledTimes(1);
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+      expect(harness.latest.rematchReason).toBe('you_skipped');
+    });
+
+    it('falls back to reconnecting at once when end_chat is rate limited', async () => {
+      jest.useFakeTimers();
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await openAndSubmit(harness);
+      await act(async () => {
+        fake.emitServerError({ code: 429, reason: 'rate_limited' });
+      });
+
+      expect(fake.connect).toHaveBeenCalledTimes(1);
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+
+      // The timer was cleared — no second reconnect.
+      await act(async () => {
+        jest.advanceTimersByTime(3_000);
+      });
+      expect(fake.connect).toHaveBeenCalledTimes(1);
+    });
+
+    it('joins right away when end_chat finds the chat already over (not_in_chat)', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await openAndSubmit(harness);
+      await act(async () => {
+        fake.emitServerError({ code: 400, reason: 'not_in_chat' });
+      });
+
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+      expect(fake.connect).not.toHaveBeenCalled();
+    });
+
+    it('a partner skip while waiting for chat_ended leaves the requeue to the server', async () => {
+      jest.useFakeTimers();
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await openAndSubmit(harness);
+      await act(async () => {
+        fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(3_000);
+      });
+
+      expect(fake.joinChat).not.toHaveBeenCalled();
+      expect(fake.connect).not.toHaveBeenCalled();
+      expect(harness.latest.rematchReason).toBe('partner_skipped');
+    });
+
+    it('refreshes the token and retries once on a 401', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service, undefined, [
+        { status: 'unauthorized' },
+        { status: 'reported', reportId: 'report-1' },
+      ]);
+
+      await openAndSubmit(harness);
+
+      expect(harness.reportUser).toHaveBeenCalledTimes(2);
+      expect(harness.getFreshAccessToken).toHaveBeenLastCalledWith({ forceRefresh: true });
+      expect(harness.latest.reportSnackbar?.tone).toBe('success');
+    });
+
+    it('retries a 5xx with backoff, then still leaves the chat with an error snackbar', async () => {
+      jest.useFakeTimers();
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service, undefined, { status: 'failed', retryable: true });
+
+      await openAndSubmit(harness, 'scam_or_spam');
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+      expect(fake.sendEndChat).not.toHaveBeenCalled();
+
+      for (const ms of [1_000, 2_000]) {
+        await act(async () => {
+          jest.advanceTimersByTime(ms);
+        });
+      }
+
+      expect(harness.reportUser).toHaveBeenCalledTimes(3);
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/Couldn't send the report/), tone: 'error' });
+      expect(fake.sendEndChat).toHaveBeenCalledTimes(1);
+      expect(harness.latest.rematchState).toBe('rematching');
+    });
+
+    it('a 404 leaves the chat with an error snackbar', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service, undefined, { status: 'nothing_to_report' });
+
+      await openAndSubmit(harness, 'threat');
+
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/already ended/), tone: 'error' });
+      expect(fake.sendEndChat).toHaveBeenCalledTimes(1);
+      expect(harness.latest.showReportSheet).toBe(false);
+    });
+
+    it('with no live socket it skips the API call and reconnects to find a new match', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const fake = makeChatSocketService();
+      fake.getSocketId.mockReturnValue(null);
+      const harness = await render(fake.service);
+
+      await openAndSubmit(harness);
+
+      expect(harness.reportUser).not.toHaveBeenCalled();
+      expect(fake.sendEndChat).not.toHaveBeenCalled();
+      expect(fake.disconnect).toHaveBeenCalled();
+      expect(fake.connect).toHaveBeenCalledTimes(1);
+      expect(harness.latest.reportSnackbar?.tone).toBe('error');
+    });
+
+    it('sends the user back to Entry when the session cannot be refreshed', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service, { status: 'reauth_required' });
+
+      await openAndSubmit(harness);
+
+      expect(harness.reportUser).not.toHaveBeenCalled();
+      expect(fake.sendEndChat).not.toHaveBeenCalled();
+      expect(fake.disconnect).toHaveBeenCalled();
+      expect(harness.onReauthRequired).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops an in-flight report when the chat ends meanwhile, and does not end or rejoin', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      let resolveReport!: (outcome: ReportOutcome) => void;
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
+
+      await openAndSubmit(harness);
+      expect(harness.latest.reportSubmitting).toBe(true);
+
+      act(() => {
+        fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
+      });
+      expect(harness.latest.showReportSheet).toBe(false);
+      expect(harness.latest.reportSubmitting).toBe(false);
+
+      await act(async () => {
+        resolveReport({ status: 'reported', reportId: 'report-1' });
+      });
+
+      expect(fake.sendEndChat).not.toHaveBeenCalled();
+      expect(fake.joinChat).not.toHaveBeenCalled();
+      expect(harness.latest.reportSnackbar).toBeNull();
+    });
+
+    it('match_found closes the report sheet', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        harness.latest.handleOpenReport();
+      });
+      act(() => {
+        fake.emitMatchFound();
+      });
+
+      expect(harness.latest.showReportSheet).toBe(false);
+    });
+
+    it('hardware back closes the report sheet instead of opening the leave-confirm popup', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        harness.latest.handleOpenReport();
+      });
+      let handled = false;
+      act(() => {
+        handled = pressHardwareBack();
+      });
+
+      expect(handled).toBe(true);
+      expect(harness.latest.showReportSheet).toBe(false);
+      expect(harness.latest.showLeaveConfirm).toBe(false);
+    });
+
+    it('handleDismissReport is ignored while a report is being sent', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(() => {}));
+
+      await openAndSubmit(harness);
+      act(() => {
+        harness.latest.handleDismissReport();
+      });
+
+      expect(harness.latest.showReportSheet).toBe(true);
     });
   });
 });

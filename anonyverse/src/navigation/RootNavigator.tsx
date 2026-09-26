@@ -22,6 +22,7 @@ import { posthog } from '../config/posthog';
 import { useAnalyticsCapture } from '../hooks/usePosthogHooks';
 import type { ChatSocketService } from '../services/chatSocket/ChatSocketService';
 import { createDevNoopChatSocketService } from '../services/chatSocket/devNoopChatSocketService';
+import { devNoopReportService } from '../services/report/devNoopReportService';
 import type { RootStackParamList } from './types';
 
 interface ChatHandoff {
@@ -288,6 +289,8 @@ function DevChatRoute({ route }: NativeStackScreenProps<RootStackParamList, 'Dev
       selection={{ mood, tags: topic ? [topic] : [], optedIn: false }}
       onLeave={() => navigation.navigate('DevMenu')}
       onReauthRequired={handleReauthRequired}
+      // A real socket (handed over from the DEV Finding Match route) can report for real.
+      reportService={params?.service ? undefined : devNoopReportService}
     />
   );
 }
