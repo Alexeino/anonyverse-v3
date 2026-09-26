@@ -1,5 +1,6 @@
 import type { Mood } from '../screens/moodSelect/MoodSelectScreen';
 import type { ChatSocketService } from '../services/chatSocket/ChatSocketService';
+import type { FeedbackDefaults } from '../screens/feedback/useFeedbackController';
 
 /**
  * Root navigation param list.
@@ -15,13 +16,15 @@ import type { ChatSocketService } from '../services/chatSocket/ChatSocketService
 export type RootStackParamList = {
   Entry: undefined;
   Verification: undefined;
-  ChatList: undefined;
+  ChatList: { promptFeedback?: boolean } | undefined;
   /**
    * showProgress distinguishes the first-time flow's onboarding-progress
    * variant (Figma node 10:839) from the returning-user variant reached
    * from Chat List's "Start a chat" — same layout, no progress bar.
    */
   MoodSelect: { showProgress: boolean };
+  /** Pre-fills the type and records which screen the feedback was opened from. */
+  Feedback: FeedbackDefaults | undefined;
   DevMenu: undefined;
   DevTopics: { mood: Mood };
   DevFindingMatch: undefined;

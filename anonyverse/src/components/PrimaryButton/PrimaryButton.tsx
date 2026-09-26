@@ -22,6 +22,7 @@ type PrimaryButtonProps =
   | {
       variant: 'disabled';
       label: string;
+      solid?: boolean;
     };
 
 /**
@@ -46,8 +47,18 @@ export function PrimaryButton(props: PrimaryButtonProps) {
 
   if (props.variant === 'disabled') {
     return (
-      <View style={[styles.button, styles.buttonDisabled]}>
-        <Text style={[typography.button, styles.label, styles.labelDisabled]}>
+      <View
+        accessibilityRole="button"
+        accessibilityState={{ disabled: true }}
+        style={[styles.button, props.solid ? styles.buttonDisabledSolid : styles.buttonDisabled]}
+      >
+        <Text
+          style={[
+            typography.button,
+            styles.label,
+            props.solid ? styles.labelDisabledSolid : styles.labelDisabled,
+          ]}
+        >
           {props.label}
         </Text>
       </View>
@@ -91,8 +102,15 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
     elevation: 0,
   },
+  buttonDisabledSolid: {
+    shadowOpacity: 0,
+    elevation: 0,
+  },
   label: {
     textAlign: 'center',
+  },
+  labelDisabledSolid: {
+    opacity: 0.6,
   },
   labelDisabled: {
     color: colors.disabledButtonText,

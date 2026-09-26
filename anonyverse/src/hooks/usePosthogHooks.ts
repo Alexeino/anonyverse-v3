@@ -21,6 +21,7 @@ type AnalyticsEvent =
     | "chat_opened"
     | "chat_closed"
     | "user_reported"
+    | "feedback_submitted"
 
 /** Debug-only captures (requiresDebug) only fire in dev builds. */
 export const DEBUG = __DEV__;
