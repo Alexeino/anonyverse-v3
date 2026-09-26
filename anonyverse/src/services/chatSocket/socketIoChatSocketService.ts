@@ -322,6 +322,10 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       };
     },
 
+    getSocketId() {
+      return socket?.connected ? socket.id ?? null : null;
+    },
+
     disconnect: closeSocket,
   };
 }

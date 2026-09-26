@@ -55,5 +55,11 @@ export interface ChatSocketService {
    */
   onConnectionLost(handler: () => void): () => void;
 
+  /**
+   * This client's own `socket.id` for the current live connection, or null
+   * when not connected — what `report-user` expects as `reporting_user_sid`.
+   */
+  getSocketId(): string | null;
+
   disconnect(): void;
 }
