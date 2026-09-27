@@ -152,16 +152,17 @@ Response `200`:
 
 ### `POST /api/v1/report/report-user`
 
-Report the user you're chatting with, or the user who just skipped you. The client never names who is being reported: the server works it out from the reporter's chat state (see [Who gets reported](#who-gets-reported)).
+Report the user from your **last ended chat**. The client names the partner by the sid it received in `match_found`, and the server accepts the report only if that sid is the partner of this device's last ended chat. A newer match can never receive the report (see [Who can be reported](#who-can-be-reported)).
+
+Headers: `Authorization: Bearer <access token>`. A refresh token is rejected with `401`.
 
 Request:
 
 ```json
 {
-  "token": "<access token>",          // required; the access token, sent in the body (not a header)
-  "report_type": "harassment",        // required; see the table below
-  "description": "free text",         // optional; may be omitted or null
-  "reporting_user_sid": "<socket.id>" // required; your own current socket.id
+  "reported_user_sid": "<partner sid>", // required; the `partner` value from match_found
+  "report_type": "harassment",          // optional (omit or null for one-tap reports); see the table below
+  "description": "free text"            // optional; may be omitted or null, max 100 chars
 }
 ```
 
@@ -173,45 +174,36 @@ Request:
 | `scam_or_spam` | Scam or spam |
 | `other` | Anything else (use `description` to explain) |
 
-- `token` must be an **access** token. A refresh token is rejected with `401`.
-- `reporting_user_sid` is the client's own `socket.id` for the **current** connection, not the partner's sid from `match_found`. Send it even when you're reporting someone who skipped you.
-
 Response `200`:
 
 ```json
 {
   "report_id": "3f2c9a7e-…",   // uuid4 string
-  "report_type": "harassment"
+  "report_type": "harassment"  // null if it was omitted
 }
 ```
+
+A successful report blocks both devices from being matched with each other for 5 minutes.
 
 | Status | `detail` | Cause | What the client should do |
 |---|---|---|---|
 | `401` | `Invalid or expired token` | Token expired, malformed, or a refresh token | Refresh the token, then retry |
-| `403` | `reporting_user_sid does not belong to this device.` | `reporting_user_sid` isn't a live connection of the device in the token (wrong sid, or the socket has disconnected) | Retry with the current `socket.id` while connected |
-| `404` | `No paired device found for the reporting user.` | Nobody to report: not in a chat, and not skipped in the last 5 minutes | Tell the user the report couldn't be sent |
-| `422` | validation error | Missing field or unknown `report_type` | Fix the request |
+| `404` | `No recent chat found with this user.` | `reported_user_sid` isn't the partner of your last ended chat: the chat is still active, a newer chat has ended since, the 5-minute window passed, it was already reported, or that user already reported you | Tell the user the report couldn't be sent |
+| `422` | validation error | Missing `reported_user_sid` or unknown `report_type` | Fix the request |
 | `500` | — | The report couldn't be stored | Retry with backoff |
 
-#### Who gets reported
+#### Who can be reported
 
-The server checks, in this order:
+Only the partner of your **last ended chat**, for **5 minutes** after it ended. A chat ends on `skip_chat`, `end_chat` or a disconnect, from either side. Being matched again doesn't change it: the previous chat stays reportable until the **new** chat ends.
 
-1. **You were skipped in the last 5 minutes** → the device that skipped you is reported.
-2. **You're in a chat** → your current partner's device is reported. `reporting_user_sid` must be your live connection.
-3. Otherwise → `404`.
-
-So a report works:
-
-| Situation | Can report? |
+| Situation | How to report |
 |---|---|
-| In a chat, reporting the current partner | Yes |
-| Your partner skipped you (within 5 minutes) | Yes, the partner who skipped you is reported |
-| You skipped your partner | **No**: report **before** calling `skip_chat` |
-| After `end_chat` (either side) | **No**: report **before** calling `end_chat` |
-| After `chat_ended {reason: "disconnected"}` | **No** |
+| In a chat, reporting the current partner | Call `end_chat` and wait for its ack `{ok: true}`, then report. If the ack is `{ok: false}`, show an error and don't report |
+| Your partner skipped you, or you skipped them | Report directly, even if you've already been matched with someone new |
+| After `end_chat` or a partner disconnect | Report directly |
+| Two chats back (a newer chat has also ended) | **No**: `404` |
 
-Recommended UI flow: when the user taps "Report" during a chat, send the report first, wait for the response, then call `skip_chat` or `end_chat`. Reporting does not end the chat by itself.
+Keep the `partner` sid from every `match_found`, including the one after a skip, and send it as `reported_user_sid`.
 
 Each call creates a new report. The server doesn't deduplicate, so don't retry a request that already returned `200`.
 
@@ -220,44 +212,6 @@ Each call creates a new report. The server doesn't deduplicate, so don't retry a
 Not rate limited. Response `200`: `{"status": "ok", "db": "ok" | "error", "cache": "ok" | "error"}`.
 
 (`/docs`, `/docs/login` and `/api/v1/jwt/docs/token` are internal and serve the Swagger UI. Clients don't use them.)
-
-### `POST /api/v1/feedback`
-
-**Purpose:**
-Submits text feedback about the app from a verified device (see `src/services/feedback/restFeedbackService.ts`).
-
-**Auth:** `Authorization: Bearer <access_token>`. The device is taken from the token — the request never carries a `device_id`. `platform` and `app_version` are copied server-side from the device record.
-
-**Request:**
-```json
-{
-  "type": "BUG",
-  "message": "The chat screen freezes.",
-  "rating": 2,
-  "screen": "ChatScreen",
-  "os_version": "15"
-}
-```
-- `type`: `BUG` | `FEATURE_REQUEST` | `IMPROVEMENT` | `GENERAL`
-- `message`: 1–2000 characters after trimming
-- `rating`: optional, 1–5
-- `screen`, `os_version`: optional, max 50 characters
-
-**Response (201):**
-```json
-{
-  "id": 1,
-  "status": "NEW",
-  "created_at": "2026-09-26T00:00:00Z"
-}
-```
-
-**Possible outcomes:**
-- 201 → saved with `status: NEW`.
-- 401 → missing/expired/invalid token, or the device no longer exists. The app asks the user to restart.
-- 403 → device is blocked.
-- 422 → invalid input.
-- 429 → rate limited (5 per 10 minutes per IP).
 
 ## Socket connection
 
@@ -339,6 +293,9 @@ Partners are ranked by how many tags they share with you. Matching is instant wh
 
 - Not in a chat → `error {code: 409, reason: "not_in_chat"}`.
 - A non-string or a message over 2000 characters is **dropped silently**.
+- A server-side failure → `error {code: 500, reason: "internal_error"}`. The server couldn't confirm delivery. Usually the partner didn't get the message, but it isn't guaranteed, so a retry can occasionally show up twice.
+
+**Message retention.** Every delivered message is stored on the server together with the sender's `device_id`. There is one list per pair of devices, shared by both directions, and it keeps only the **most recent 300 messages**. The list expires **1 hour after the pair's most recent message**: each new message resets the timer. A failure while storing doesn't affect delivery, and the client gets no error for it.
 
 ### `skip_chat()`
 
@@ -346,9 +303,15 @@ End the current chat and look for someone new. Both users are put back in matchm
 
 If you're not in a chat, nothing happens and no event is sent.
 
-### `end_chat()`
+### `end_chat()` → ack
 
-Stop chatting (or stop searching). The server always replies with `chat_ended {reason: "ended", by: "self"}`.
+Stop chatting (or stop searching). The server always replies with `chat_ended {reason: "ended", by: "self"}`, and acks:
+
+| Ack | Meaning |
+|---|---|
+| `{ok: true, status: "ended"}` | The chat ended, or had already ended. It is now reportable |
+| `{ok: false, status: "error"}` | Server error; the chat may not have ended |
+| `{ok: false, status: "rate_limited"}` | Rate limited (an `error` event with code `429` is also sent) |
 
 - In a chat → the partner gets `chat_ended {reason: "ended", by: "partner"}`. **Neither user is requeued.**
 - Queued → you're removed from the queue (this cancels the search).
@@ -367,7 +330,7 @@ Forwarded to the partner as `partner_typing` / `partner_typing_stop`. Ignored wh
 | `receive_message` | `{message: string}` | The partner sent a message. |
 | `partner_typing` | `{}` | The partner is typing. |
 | `partner_typing_stop` | `{}` | The partner stopped typing. |
-| `error` | `{code, reason}` | `429 rate_limited` or `409 not_in_chat`. |
+| `error` | `{code, reason}` | `429 rate_limited`, `409 not_in_chat`, or `500 internal_error` (from `send_message`). |
 
 `chat_ended`:
 
@@ -440,6 +403,7 @@ The OS closes the socket whenever the app goes to the background, the screen loc
 4. **On `error {reason: "not_in_chat"}`**, reset the chat UI. It's the backup for a missed disconnect.
 5. **Use an `auth` callback** so reconnects send a fresh access token. The access token lasts 30 minutes, and an expired one is refused with `401 invalid_token`: refresh the token, then reconnect.
 6. **Back off** on `429 rate_limited` and `503 unavailable`. The connect limit allows 20 quick reconnects per device, then about 6 per minute, which covers normal background/foreground switching.
+7. **On `error {reason: "internal_error"}`** after a `send_message`, mark the last message as failed and let the user retry it.
 
 ## Rate limits
 

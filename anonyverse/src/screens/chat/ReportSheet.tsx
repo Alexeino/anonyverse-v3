@@ -30,7 +30,7 @@ const WHAT_HAPPENS_NEXT = [
   'You two will never be matched again either way.',
 ];
 
-export const MAX_REPORT_DESCRIPTION_LENGTH = 500;
+export const MAX_REPORT_DESCRIPTION_LENGTH = 100;
 
 export interface ReportSheetProps {
   submitting: boolean;

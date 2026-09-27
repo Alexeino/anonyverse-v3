@@ -1,5 +1,6 @@
 import type {
   ChatEndedEvent,
+  EndChatAck,
   JoinChatAck,
   MatchFoundEvent,
   QueuedEvent,
@@ -41,8 +42,15 @@ export interface ChatSocketService {
 
   sendSkipChat(): void;
 
-  /** Ends the current chat without automatically re-queueing (docs/api.md `end_chat`). */
+  /** Ends the current chat without automatically re-queueing (docs/api.md `end_chat`), without waiting for the ack. */
   sendEndChat(): void;
+
+  /**
+   * Ends the current chat and resolves with the server's ack — `ok: true`
+   * means the chat is over and can be reported. Rejects with an
+   * EndChatError if no ack arrives in time or the socket drops first.
+   */
+  endChat(): Promise<EndChatAck>;
 
   onChatEnded(handler: (event: ChatEndedEvent) => void): () => void;
 
@@ -54,12 +62,6 @@ export interface ChatSocketService {
    * loss, server restart). Reconnection is off, so the chat can't continue.
    */
   onConnectionLost(handler: () => void): () => void;
-
-  /**
-   * This client's own `socket.id` for the current live connection, or null
-   * when not connected — what `report-user` expects as `reporting_user_sid`.
-   */
-  getSocketId(): string | null;
 
   disconnect(): void;
 }

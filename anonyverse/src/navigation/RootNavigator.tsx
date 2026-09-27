@@ -221,6 +221,7 @@ function VerificationRoute() {
       {displayStep === 'chat' && chatHandoff && selection ? (
         <ChatScreen
           chatSocketService={chatHandoff.service}
+          partnerSid={chatHandoff.partner}
           selection={selection}
           onLeave={handleLeaveChat}
           onReauthRequired={handleReauthRequired}
@@ -377,6 +378,7 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
       {displayStep === 'chat' && chatHandoff && selection ? (
         <ChatScreen
           chatSocketService={chatHandoff.service}
+          partnerSid={chatHandoff.partner}
           selection={selection}
           onLeave={handleLeaveChat}
           onReauthRequired={handleReauthRequired}
@@ -448,6 +450,7 @@ function DevChatRoute({ route }: NativeStackScreenProps<RootStackParamList, 'Dev
   return (
     <ChatScreen
       chatSocketService={params?.service ?? fallbackServiceRef.current}
+      partnerSid={params?.partner ?? 'dev-partner'}
       selection={{ mood, tags: topic ? [topic] : [], optedIn: false }}
       onLeave={() => navigation.navigate('DevMenu')}
       onReauthRequired={handleReauthRequired}
@@ -467,7 +470,8 @@ function DevFindingNewMatchModalRoute() {
     <FindingNewMatchModal
       reason="partner_skipped"
       onStopSearching={() => navigation.goBack()}
-      onReport={() => console.log('[DevFindingNewMatchModal] Report tapped — not implemented yet.')}
+      onReport={() => console.log('[DevFindingNewMatchModal] Report tapped.')}
+      reportStatus="idle"
     />
   );
 }

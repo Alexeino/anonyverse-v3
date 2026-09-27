@@ -5,6 +5,7 @@ import type { ChatSocketService } from '../../../services/chatSocket/ChatSocketS
 import { makeFakeTokenProvider } from '../../../services/chatSocket/testing/fakeChatSocketService';
 import type {
   ChatEndedEvent,
+  EndChatAck,
   JoinChatAck,
   MatchFoundEvent,
   QueuedEvent,
@@ -70,7 +71,7 @@ function makeChatSocketService() {
   const sendSkipChat = jest.fn();
   const sendEndChat = jest.fn();
   const disconnect = jest.fn();
-  const getSocketId = jest.fn((): string | null => 'sid-1');
+  const endChat = jest.fn((): Promise<EndChatAck> => Promise.resolve({ ok: true, status: 'ended' }));
   const joinChat = jest.fn((): Promise<JoinChatAck> => Promise.resolve({ ok: true, status: 'matched' }));
   const connect = jest.fn((_getAccessToken: () => string | null) => Promise.resolve());
 
@@ -102,6 +103,7 @@ function makeChatSocketService() {
     },
     sendSkipChat,
     sendEndChat,
+    endChat,
     onChatEnded: handler => {
       chatEndedHandlers.add(handler);
       return () => chatEndedHandlers.delete(handler);
@@ -114,7 +116,6 @@ function makeChatSocketService() {
       connectionLostHandlers.add(handler);
       return () => connectionLostHandlers.delete(handler);
     },
-    getSocketId,
     disconnect,
   };
 
@@ -126,7 +127,7 @@ function makeChatSocketService() {
     sendSkipChat,
     sendEndChat,
     disconnect,
-    getSocketId,
+    endChat,
     joinChat,
     connect,
     emitQueued: () => queuedHandlers.forEach(handler => handler({ partner: null })),
@@ -160,6 +161,7 @@ function Harness({
 }) {
   const result = useChatController(
     service,
+    'partner-1',
     TEST_SELECTION,
     tokenProvider,
     onLeave,
@@ -1183,7 +1185,7 @@ describe('useChatController', () => {
       expect(harness.latest.showReportSheet).toBe(false);
     });
 
-    it('sends the report with a fresh token and our own socket id, then ends the chat — never skip_chat', async () => {
+    it('ends the chat and waits for the ack, then reports the partner by sid and rejoins — never skip_chat', async () => {
       const fake = makeChatSocketService();
       const harness = await render(fake.service);
 
@@ -1194,34 +1196,104 @@ describe('useChatController', () => {
         harness.latest.handleSubmitReport('other', 'was rude');
       });
 
+      expect(fake.endChat).toHaveBeenCalledTimes(1);
       expect(harness.reportUser).toHaveBeenCalledWith({
         accessToken: 'access-token',
+        reportedUserSid: 'partner-1',
         reportType: 'other',
         description: 'was rude',
-        reportingUserSid: 'sid-1',
       });
-      expect(fake.sendEndChat).toHaveBeenCalledTimes(1);
-      expect(harness.reportUser.mock.invocationCallOrder[0]).toBeLessThan(fake.sendEndChat.mock.invocationCallOrder[0]);
+      expect(fake.endChat.mock.invocationCallOrder[0]).toBeLessThan(harness.reportUser.mock.invocationCallOrder[0]);
       expect(fake.sendSkipChat).not.toHaveBeenCalled();
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+      expect(fake.connect).not.toHaveBeenCalled();
       expect(harness.latest.showReportSheet).toBe(false);
       expect(harness.latest.rematchState).toBe('rematching');
       expect(harness.latest.rematchReason).toBe('you_skipped');
     });
 
-    it('waits for chat_ended {ended, by: self} before joining again', async () => {
+    it('sends nothing until end_chat is acked, and ignores the chat_ended {ended, self} it produces', async () => {
       const fake = makeChatSocketService();
+      let resolveEndChat!: (ack: EndChatAck) => void;
+      fake.endChat.mockImplementationOnce(() => new Promise<EndChatAck>(resolve => (resolveEndChat = resolve)));
       const harness = await render(fake.service);
 
       await openAndSubmit(harness);
-      expect(fake.joinChat).not.toHaveBeenCalled();
+      act(() => {
+        fake.emitChatEnded({ reason: 'ended', by: 'self' });
+      });
+      expect(harness.reportUser).not.toHaveBeenCalled();
+      expect(harness.latest.reportSubmitting).toBe(true);
 
       await act(async () => {
-        fake.emitChatEnded({ reason: 'ended', by: 'self' });
+        resolveEndChat({ ok: true, status: 'ended' });
+      });
+
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+    });
+
+    it('waits for the report to finish before re-joining, so the same partner cannot be matched first', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      let resolveReport!: (outcome: ReportOutcome) => void;
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
+
+      await openAndSubmit(harness);
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+      expect(fake.joinChat).not.toHaveBeenCalled();
+      expect(harness.latest.rematchState).toBe('rematching');
+
+      await act(async () => {
+        resolveReport({ status: 'reported', reportId: 'report-1' });
       });
 
       expect(fake.joinChat).toHaveBeenCalledTimes(1);
-      expect(fake.connect).not.toHaveBeenCalled();
-      expect(harness.latest.rematchState).toBe('rematching');
+      expect(harness.reportUser.mock.invocationCallOrder[0]).toBeLessThan(fake.joinChat.mock.invocationCallOrder[0]);
+    });
+
+    it('still re-joins after the report fails — end_chat keeps the pair apart meanwhile', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service, undefined, { status: 'failed', retryable: false });
+
+      await openAndSubmit(harness);
+
+      expect(harness.latest.reportSnackbar?.tone).toBe('error');
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not re-join after the report once a reconnect has already started one', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      let resolveReport!: (outcome: ReportOutcome) => void;
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
+      // The reconnect's join stays pending, so its findMatch loop is still running.
+      fake.joinChat.mockImplementationOnce(() => new Promise<JoinChatAck>(() => {}));
+
+      await openAndSubmit(harness);
+      await act(async () => {
+        fake.emitConnectionLost();
+      });
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveReport({ status: 'reported', reportId: 'report-1' });
+      });
+
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+    });
+
+    it('reports the partner from the latest match_found', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        fake.emitMatchFound({ partner: 'partner-7' });
+      });
+      await openAndSubmit(harness);
+
+      expect(harness.reportUser).toHaveBeenCalledWith(expect.objectContaining({ reportedUserSid: 'partner-7' }));
     });
 
     it('shows a success snackbar alongside the rematch modal, which clears itself after 4s', async () => {
@@ -1230,9 +1302,6 @@ describe('useChatController', () => {
       const harness = await render(fake.service);
 
       await openAndSubmit(harness);
-      await act(async () => {
-        fake.emitChatEnded({ reason: 'ended', by: 'self' });
-      });
 
       expect(harness.latest.rematchState).toBe('rematching');
       expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/Reported successfully/), tone: 'success' });
@@ -1243,71 +1312,46 @@ describe('useChatController', () => {
       expect(harness.latest.reportSnackbar).toBeNull();
     });
 
-    it('falls back to reconnecting when chat_ended does not arrive in time', async () => {
-      jest.useFakeTimers();
+    it.each([
+      ['an error ack', () => Promise.resolve<EndChatAck>({ ok: false, status: 'error' })],
+      ['a rate_limited ack', () => Promise.resolve<EndChatAck>({ ok: false, status: 'rate_limited' })],
+      ['no ack in time', () => Promise.reject({ reason: 'END_CHAT_TIMEOUT' })],
+    ])('with %s it reports nothing, shows an error, and leaves by reconnecting', async (_label, endChatImpl) => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
       const fake = makeChatSocketService();
+      fake.endChat.mockImplementationOnce(endChatImpl);
       const harness = await render(fake.service);
 
       await openAndSubmit(harness);
-      await act(async () => {
-        jest.advanceTimersByTime(3_000);
-      });
 
+      expect(harness.reportUser).not.toHaveBeenCalled();
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/Couldn't send the report/), tone: 'error' });
       expect(fake.disconnect).toHaveBeenCalled();
       expect(fake.connect).toHaveBeenCalledTimes(1);
       expect(fake.joinChat).toHaveBeenCalledTimes(1);
-      expect(harness.latest.rematchReason).toBe('you_skipped');
+      expect(harness.latest.rematchState).toBe('rematching');
+      // The chat ended by our disconnect, so the rematch link can still report it.
+      expect(harness.latest.quickReportStatus).toBe('idle');
     });
 
-    it('falls back to reconnecting at once when end_chat is rate limited', async () => {
-      jest.useFakeTimers();
+    it('a partner skip while waiting for the ack leaves the requeue to the server but still reports', async () => {
       const fake = makeChatSocketService();
+      let resolveEndChat!: (ack: EndChatAck) => void;
+      fake.endChat.mockImplementationOnce(() => new Promise<EndChatAck>(resolve => (resolveEndChat = resolve)));
       const harness = await render(fake.service);
 
       await openAndSubmit(harness);
-      await act(async () => {
-        fake.emitServerError({ code: 429, reason: 'rate_limited' });
-      });
-
-      expect(fake.connect).toHaveBeenCalledTimes(1);
-      expect(fake.joinChat).toHaveBeenCalledTimes(1);
-
-      // The timer was cleared — no second reconnect.
-      await act(async () => {
-        jest.advanceTimersByTime(3_000);
-      });
-      expect(fake.connect).toHaveBeenCalledTimes(1);
-    });
-
-    it('joins right away when end_chat finds the chat already over (not_in_chat)', async () => {
-      const fake = makeChatSocketService();
-      const harness = await render(fake.service);
-
-      await openAndSubmit(harness);
-      await act(async () => {
-        fake.emitServerError({ code: 400, reason: 'not_in_chat' });
-      });
-
-      expect(fake.joinChat).toHaveBeenCalledTimes(1);
-      expect(fake.connect).not.toHaveBeenCalled();
-    });
-
-    it('a partner skip while waiting for chat_ended leaves the requeue to the server', async () => {
-      jest.useFakeTimers();
-      const fake = makeChatSocketService();
-      const harness = await render(fake.service);
-
-      await openAndSubmit(harness);
-      await act(async () => {
+      act(() => {
         fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
       });
       await act(async () => {
-        jest.advanceTimersByTime(3_000);
+        resolveEndChat({ ok: true, status: 'ended' });
       });
 
       expect(fake.joinChat).not.toHaveBeenCalled();
       expect(fake.connect).not.toHaveBeenCalled();
       expect(harness.latest.rematchReason).toBe('partner_skipped');
+      expect(harness.reportUser).toHaveBeenCalledWith(expect.objectContaining({ reportedUserSid: 'partner-1' }));
     });
 
     it('refreshes the token and retries once on a 401', async () => {
@@ -1324,29 +1368,27 @@ describe('useChatController', () => {
       expect(harness.latest.reportSnackbar?.tone).toBe('success');
     });
 
-    it('retries a 5xx with backoff, then still leaves the chat with an error snackbar', async () => {
+    it('does not retry a 5xx — one attempt, then an error snackbar', async () => {
       jest.useFakeTimers();
       jest.spyOn(console, 'error').mockImplementation(() => {});
       const fake = makeChatSocketService();
       const harness = await render(fake.service, undefined, { status: 'failed', retryable: true });
 
       await openAndSubmit(harness, 'scam_or_spam');
+
       expect(harness.reportUser).toHaveBeenCalledTimes(1);
-      expect(fake.sendEndChat).not.toHaveBeenCalled();
-
-      for (const ms of [1_000, 2_000]) {
-        await act(async () => {
-          jest.advanceTimersByTime(ms);
-        });
-      }
-
-      expect(harness.reportUser).toHaveBeenCalledTimes(3);
       expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/Couldn't send the report/), tone: 'error' });
-      expect(fake.sendEndChat).toHaveBeenCalledTimes(1);
       expect(harness.latest.rematchState).toBe('rematching');
+      expect(harness.latest.quickReportStatus).toBe('idle');
+      expect(fake.joinChat).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        jest.advanceTimersByTime(10_000);
+      });
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
     });
 
-    it('a 422 is not retried and leaves the chat with the error snackbar', async () => {
+    it('a 422 is not retried and shows the error snackbar', async () => {
       jest.spyOn(console, 'error').mockImplementation(() => {});
       const fake = makeChatSocketService();
       const harness = await render(fake.service, undefined, { status: 'failed', retryable: false });
@@ -1355,33 +1397,16 @@ describe('useChatController', () => {
 
       expect(harness.reportUser).toHaveBeenCalledTimes(1);
       expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/Couldn't send the report/), tone: 'error' });
-      expect(fake.sendEndChat).toHaveBeenCalledTimes(1);
     });
 
-    it('a 404 leaves the chat with an error snackbar', async () => {
+    it('a 404 says the chat can no longer be reported', async () => {
       const fake = makeChatSocketService();
       const harness = await render(fake.service, undefined, { status: 'nothing_to_report' });
 
       await openAndSubmit(harness, 'threat');
 
-      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/already ended/), tone: 'error' });
-      expect(fake.sendEndChat).toHaveBeenCalledTimes(1);
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/can no longer be reported/), tone: 'error' });
       expect(harness.latest.showReportSheet).toBe(false);
-    });
-
-    it('with no live socket it skips the API call and reconnects to find a new match', async () => {
-      jest.spyOn(console, 'error').mockImplementation(() => {});
-      const fake = makeChatSocketService();
-      fake.getSocketId.mockReturnValue(null);
-      const harness = await render(fake.service);
-
-      await openAndSubmit(harness);
-
-      expect(harness.reportUser).not.toHaveBeenCalled();
-      expect(fake.sendEndChat).not.toHaveBeenCalled();
-      expect(fake.disconnect).toHaveBeenCalled();
-      expect(fake.connect).toHaveBeenCalledTimes(1);
-      expect(harness.latest.reportSnackbar?.tone).toBe('error');
     });
 
     it('sends the user back to Entry when the session cannot be refreshed', async () => {
@@ -1392,33 +1417,26 @@ describe('useChatController', () => {
       await openAndSubmit(harness);
 
       expect(harness.reportUser).not.toHaveBeenCalled();
-      expect(fake.sendEndChat).not.toHaveBeenCalled();
       expect(fake.disconnect).toHaveBeenCalled();
       expect(harness.onReauthRequired).toHaveBeenCalledTimes(1);
     });
 
-    it('drops an in-flight report when the chat ends meanwhile, and does not end or rejoin', async () => {
+    it('a report still in flight when the next match arrives shows its outcome without marking the new chat', async () => {
       const fake = makeChatSocketService();
       const harness = await render(fake.service);
       let resolveReport!: (outcome: ReportOutcome) => void;
       harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
 
       await openAndSubmit(harness);
-      expect(harness.latest.reportSubmitting).toBe(true);
-
       act(() => {
-        fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
+        fake.emitMatchFound({ partner: 'partner-2' });
       });
-      expect(harness.latest.showReportSheet).toBe(false);
-      expect(harness.latest.reportSubmitting).toBe(false);
-
       await act(async () => {
         resolveReport({ status: 'reported', reportId: 'report-1' });
       });
 
-      expect(fake.sendEndChat).not.toHaveBeenCalled();
-      expect(fake.joinChat).not.toHaveBeenCalled();
-      expect(harness.latest.reportSnackbar).toBeNull();
+      expect(harness.latest.reportSnackbar?.tone).toBe('success');
+      expect(harness.latest.quickReportStatus).toBe('idle');
     });
 
     it('match_found closes the report sheet', async () => {
@@ -1452,10 +1470,10 @@ describe('useChatController', () => {
       expect(harness.latest.showLeaveConfirm).toBe(false);
     });
 
-    it('handleDismissReport is ignored while a report is being sent', async () => {
+    it('handleDismissReport is ignored while the report is ending the chat', async () => {
       const fake = makeChatSocketService();
       const harness = await render(fake.service);
-      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(() => {}));
+      fake.endChat.mockImplementationOnce(() => new Promise<EndChatAck>(() => {}));
 
       await openAndSubmit(harness);
       act(() => {
@@ -1463,6 +1481,274 @@ describe('useChatController', () => {
       });
 
       expect(harness.latest.showReportSheet).toBe(true);
+    });
+  });
+
+  describe('quick report', () => {
+    async function skippedThenQuickReport(harness: Awaited<ReturnType<typeof render>>, fake: ReturnType<typeof makeChatSocketService>) {
+      act(() => {
+        fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
+      });
+      await act(async () => {
+        harness.latest.handleQuickReport();
+      });
+    }
+
+    it('reports the ended chat with no reason while rematching, and leaves matchmaking alone', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await skippedThenQuickReport(harness, fake);
+
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+      expect(harness.reportUser).toHaveBeenCalledWith({
+        accessToken: 'access-token',
+        reportedUserSid: 'partner-1',
+        reportType: undefined,
+        description: undefined,
+      });
+      expect(fake.sendSkipChat).not.toHaveBeenCalled();
+      expect(fake.sendEndChat).not.toHaveBeenCalled();
+      expect(fake.joinChat).not.toHaveBeenCalled();
+      expect(fake.disconnect).not.toHaveBeenCalled();
+      expect(harness.latest.rematchState).toBe('rematching');
+      expect(harness.latest.showReportSheet).toBe(false);
+    });
+
+    it('works after any chat end, e.g. the partner ending it', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await act(async () => {
+        fake.emitChatEnded({ reason: 'ended', by: 'partner' });
+      });
+      await act(async () => {
+        harness.latest.handleQuickReport();
+      });
+
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+      expect(harness.latest.quickReportStatus).toBe('reported');
+    });
+
+    it('marks the link reported and shows a success snackbar; a second tap sends nothing', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await skippedThenQuickReport(harness, fake);
+
+      expect(harness.latest.quickReportStatus).toBe('reported');
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/^Reported\./), tone: 'success' });
+
+      await act(async () => {
+        harness.latest.handleQuickReport();
+      });
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+    });
+
+    it('is "sending" while the request is in flight', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(() => {}));
+
+      await skippedThenQuickReport(harness, fake);
+
+      expect(harness.latest.quickReportStatus).toBe('sending');
+    });
+
+    it('does nothing during a live chat', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await act(async () => {
+        harness.latest.handleQuickReport();
+      });
+
+      expect(harness.reportUser).not.toHaveBeenCalled();
+      expect(harness.latest.quickReportStatus).toBe('idle');
+    });
+
+    it('a failure shows an error snackbar and lets the user tap again', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service, undefined, { status: 'failed', retryable: false });
+
+      await skippedThenQuickReport(harness, fake);
+
+      expect(harness.latest.quickReportStatus).toBe('idle');
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/Couldn't send the report/), tone: 'error' });
+      expect(fake.sendEndChat).not.toHaveBeenCalled();
+    });
+
+    it('a 404 says the chat can no longer be reported', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service, undefined, { status: 'nothing_to_report' });
+
+      await skippedThenQuickReport(harness, fake);
+
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/can no longer be reported/), tone: 'error' });
+    });
+
+    it('finishes after match_found — the report names the ended chat, not the new partner', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      let resolveReport!: (outcome: ReportOutcome) => void;
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
+
+      await skippedThenQuickReport(harness, fake);
+      act(() => {
+        fake.emitMatchFound({ partner: 'partner-2' });
+      });
+      await act(async () => {
+        resolveReport({ status: 'reported', reportId: 'report-1' });
+      });
+
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+      expect(harness.reportUser).toHaveBeenLastCalledWith(expect.objectContaining({ reportedUserSid: 'partner-1' }));
+      expect(harness.latest.reportSnackbar?.tone).toBe('success');
+      expect(harness.latest.quickReportStatus).toBe('idle');
+    });
+
+    it('works while our own socket is reconnecting — no live socket is needed', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await act(async () => {
+        fake.emitConnectionLost();
+      });
+      await act(async () => {
+        harness.latest.handleQuickReport();
+      });
+
+      expect(harness.reportUser).toHaveBeenCalledWith(expect.objectContaining({ reportedUserSid: 'partner-1' }));
+    });
+
+    it('a report already sent when match_found arrives still shows its snackbar, without marking the new chat reported', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      let resolveReport!: (outcome: ReportOutcome) => void;
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
+
+      await skippedThenQuickReport(harness, fake);
+      act(() => {
+        fake.emitMatchFound();
+      });
+      await act(async () => {
+        resolveReport({ status: 'reported', reportId: 'report-1' });
+      });
+
+      expect(harness.latest.reportSnackbar).toEqual({ text: expect.stringMatching(/^Reported\./), tone: 'success' });
+      expect(harness.latest.quickReportStatus).toBe('idle');
+    });
+
+    it('is already "reported" after reporting the same partner from the in-chat sheet', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      act(() => {
+        harness.latest.handleOpenReport();
+      });
+      await act(async () => {
+        harness.latest.handleSubmitReport('harassment');
+      });
+      expect(harness.latest.rematchState).toBe('rematching');
+      expect(harness.latest.quickReportStatus).toBe('reported');
+
+      await act(async () => {
+        harness.latest.handleQuickReport();
+      });
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+    });
+
+    it('a failure after match_found shows no snackbar in the new chat', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      let resolveReport!: (outcome: ReportOutcome) => void;
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
+
+      await skippedThenQuickReport(harness, fake);
+      act(() => {
+        fake.emitMatchFound();
+      });
+      await act(async () => {
+        resolveReport({ status: 'failed', retryable: false });
+      });
+
+      expect(harness.latest.reportSnackbar).toBeNull();
+      expect(harness.latest.quickReportStatus).toBe('idle');
+    });
+
+    it('an expired session after match_found still sends the user back to Entry', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service, [
+        { status: 'ok', accessToken: 'access-token' },
+        { status: 'reauth_required' },
+      ]);
+      let resolveReport!: (outcome: ReportOutcome) => void;
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
+
+      await skippedThenQuickReport(harness, fake);
+      act(() => {
+        fake.emitMatchFound({ partner: 'partner-2' });
+      });
+      await act(async () => {
+        resolveReport({ status: 'unauthorized' });
+      });
+
+      expect(harness.getFreshAccessToken).toHaveBeenLastCalledWith({ forceRefresh: true });
+      expect(fake.disconnect).toHaveBeenCalled();
+      expect(harness.onReauthRequired).toHaveBeenCalledTimes(1);
+    });
+
+    it('stays "reported" across our own reconnect — it is still the same ended chat', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await skippedThenQuickReport(harness, fake);
+      await act(async () => {
+        fake.emitConnectionLost();
+      });
+
+      expect(harness.latest.rematchReason).toBe('reconnecting');
+      expect(harness.latest.quickReportStatus).toBe('reported');
+      await act(async () => {
+        harness.latest.handleQuickReport();
+      });
+      expect(harness.reportUser).toHaveBeenCalledTimes(1);
+    });
+
+    it('drops an in-flight quick report once the user stops searching', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+      let resolveReport!: (outcome: ReportOutcome) => void;
+      harness.reportUser.mockImplementationOnce(() => new Promise<ReportOutcome>(resolve => (resolveReport = resolve)));
+
+      await skippedThenQuickReport(harness, fake);
+      act(() => {
+        harness.latest.handleStopSearching();
+      });
+      await act(async () => {
+        resolveReport({ status: 'reported', reportId: 'report-1' });
+      });
+
+      expect(harness.onLeave).toHaveBeenCalledTimes(1);
+      expect(harness.latest.reportSnackbar).toBeNull();
+    });
+
+    it('match_found resets the link for the next ended chat', async () => {
+      const fake = makeChatSocketService();
+      const harness = await render(fake.service);
+
+      await skippedThenQuickReport(harness, fake);
+      expect(harness.latest.quickReportStatus).toBe('reported');
+
+      act(() => {
+        fake.emitMatchFound();
+      });
+      await skippedThenQuickReport(harness, fake);
+
+      expect(harness.reportUser).toHaveBeenCalledTimes(2);
     });
   });
 });
