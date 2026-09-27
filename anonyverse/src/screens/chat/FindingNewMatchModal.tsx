@@ -1,12 +1,12 @@
 import React, { useEffect, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { BlurView } from '@react-native-community/blur';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 import { MascotPair } from '../../components/MascotPair/MascotPair';
 import { colors, fontFamily, radii, spacing, typography } from '../../design/tokens';
 import { rgbaAlpha } from '../../design/svgColor';
-import type { RematchReason } from './useChatController';
+import type { QuickReportStatus, RematchReason } from './useChatController';
 
 const miliLookingOut = require('../../assets/images/mili-looking-out.png');
 const miloExcited = require('../../assets/images/milo-excited.png');
@@ -34,11 +34,21 @@ export interface FindingNewMatchModalProps {
   /** Styles statusMessage as an error; a "retrying" status stays neutral. */
   statusIsError?: boolean;
   onStopSearching: () => void;
+  /** One-tap report of the chat that just ended. */
   onReport: () => void;
+  reportStatus: QuickReportStatus;
 }
 
-export function FindingNewMatchModal({ reason, statusMessage, statusIsError, onStopSearching, onReport }: FindingNewMatchModalProps) {
+export function FindingNewMatchModal({
+  reason,
+  statusMessage,
+  statusIsError,
+  onStopSearching,
+  onReport,
+  reportStatus,
+}: FindingNewMatchModalProps) {
   const subtitle = reason ? REASON_SUBTITLE[reason] : DEFAULT_SUBTITLE;
+  const reportDisabled = reportStatus !== 'idle';
 
   return (
     <View style={styles.root}>
@@ -109,11 +119,19 @@ export function FindingNewMatchModal({ reason, statusMessage, statusIsError, onS
 
           <Pressable
             onPress={onReport}
+            disabled={reportDisabled}
             accessibilityRole="button"
-            accessibilityLabel="Report that chat"
-            style={({ pressed }) => [styles.reportLink, pressed && styles.pressed]}
+            accessibilityLabel={reportStatus === 'reported' ? 'Chat reported' : 'Report that chat'}
+            accessibilityState={{ disabled: reportDisabled, busy: reportStatus === 'sending' }}
+            style={({ pressed }) => [styles.reportLink, pressed && !reportDisabled && styles.pressed]}
           >
-            <Text style={styles.reportLinkLabel}>Report that chat</Text>
+            {reportStatus === 'sending' ? (
+              <ActivityIndicator size="small" color={colors.danger} />
+            ) : (
+              <Text style={[styles.reportLinkLabel, reportStatus === 'reported' && styles.reportLinkLabelDone]}>
+                {reportStatus === 'reported' ? 'Reported ✓' : 'Report that chat'}
+              </Text>
+            )}
           </Pressable>
         </View>
 
@@ -290,6 +308,9 @@ const styles = StyleSheet.create({
     fontFamily: fontFamily.semiBold,
     fontSize: 13,
     color: colors.danger,
+  },
+  reportLinkLabelDone: {
+    color: colors.body,
   },
   footer: {
     ...typography.caption,

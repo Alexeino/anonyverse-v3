@@ -43,6 +43,8 @@ const EDGE_SWIPE_VELOCITY = 0.5;
 
 export interface ChatScreenProps {
   chatSocketService: ChatSocketService;
+  /** The partner's sid from the `match_found` that opened this chat — what a report names. */
+  partnerSid: string;
   /** What the user searched with — reused for every rejoin after the partner leaves or a reconnect. */
   selection: TopicsSelection;
   onLeave: (reason: ChatLeaveReason) => void;
@@ -58,6 +60,7 @@ export interface ChatScreenProps {
 
 export function ChatScreen({
   chatSocketService,
+  partnerSid,
   selection,
   onLeave,
   onReauthRequired,
@@ -97,8 +100,11 @@ export function ChatScreen({
     handleOpenReport,
     handleDismissReport,
     handleSubmitReport,
+    quickReportStatus,
+    handleQuickReport,
   } = useChatController(
     chatSocketService,
+    partnerSid,
     selection,
     tokenProvider,
     onLeave,
@@ -296,7 +302,8 @@ export function ChatScreen({
           statusMessage={rematchStatusMessage}
           statusIsError={rematchGaveUp}
           onStopSearching={handleStopSearching}
-          onReport={handleOpenReport}
+          onReport={handleQuickReport}
+          reportStatus={quickReportStatus}
         />
       ) : null}
 

@@ -5,6 +5,8 @@ import type {
   ChatEndedEvent,
   ChatSocketConnectError,
   ChatSocketConnectErrorReason,
+  EndChatAck,
+  EndChatError,
   JoinChatAck,
   JoinChatError,
   MatchFoundEvent,
@@ -17,6 +19,7 @@ const CONNECTION_TIMEOUT_MS = 10_000;
 // The server sends no ack at all when none of the tags are allowed (see
 // docs/api.md "Known issues"), so an ack timeout is required, not defensive.
 const JOIN_CHAT_TIMEOUT_MS = 10_000;
+const END_CHAT_TIMEOUT_MS = 5_000;
 
 /**
  * The backend's join_chat only recognises `"fl"` as the low mood (it sets the
@@ -55,6 +58,40 @@ function joinChatOnSocket(
     activeSocket.once('disconnect', onDisconnect);
 
     activeSocket.emit('join_chat', tags, mood, optedIn, (ack: JoinChatAck) => {
+      if (__DEV__) {
+        console.log('[Socket] ← ack join_chat', ack);
+      }
+      settle(() => resolve(ack));
+    });
+  });
+}
+
+function endChatOnSocket(activeSocket: Socket): Promise<EndChatAck> {
+  return new Promise<EndChatAck>((resolve, reject) => {
+    let settled = false;
+    function settle(run: () => void) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timeoutId);
+      activeSocket.off('disconnect', onDisconnect);
+      run();
+    }
+
+    const timeoutId = setTimeout(() => {
+      settle(() => reject({ reason: 'END_CHAT_TIMEOUT' } satisfies EndChatError));
+    }, END_CHAT_TIMEOUT_MS);
+
+    function onDisconnect() {
+      settle(() => reject({ reason: 'NOT_CONNECTED' } satisfies EndChatError));
+    }
+    activeSocket.once('disconnect', onDisconnect);
+
+    activeSocket.emit('end_chat', (ack: EndChatAck) => {
+      if (__DEV__) {
+        console.log('[Socket] ← ack end_chat', ack);
+      }
       settle(() => resolve(ack));
     });
   });
@@ -170,6 +207,21 @@ export function createSocketIoChatSocketService(): ChatSocketService {
           reconnection: false,
         });
         socket = nextSocket;
+        if (__DEV__) {
+          // Every server event and client emit, including ones added later.
+          // Ack callbacks are logged in joinChatOnSocket/endChatOnSocket.
+          nextSocket.onAny((event, ...args) => console.log(`[Socket] ← ${event}`, ...args));
+          nextSocket.onAnyOutgoing((event, ...args) =>
+            console.log(
+              `[Socket] → ${event}`,
+              ...args.filter(arg => typeof arg !== 'function'),
+            ),
+          );
+          // Lifecycle events aren't delivered to onAny.
+          nextSocket.on('connect', () => console.log('[Socket] connected', nextSocket.id));
+          nextSocket.on('connect_error', error => console.log('[Socket] connect_error', error));
+          nextSocket.on('disconnect', reason => console.log('[Socket] disconnected', reason));
+        }
         nextSocket.on('match_found', handleMatchFound);
         nextSocket.on('queued', handleQueued);
         nextSocket.on('receive_message', handleReceiveMessage);
@@ -301,6 +353,13 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       socket.emit('end_chat');
     },
 
+    endChat() {
+      if (!socket?.connected) {
+        return Promise.reject({ reason: 'NOT_CONNECTED' } satisfies EndChatError);
+      }
+      return endChatOnSocket(socket);
+    },
+
     onChatEnded(handler) {
       chatEndedHandlers.add(handler);
       return () => {
@@ -320,10 +379,6 @@ export function createSocketIoChatSocketService(): ChatSocketService {
       return () => {
         connectionLostHandlers.delete(handler);
       };
-    },
-
-    getSocketId() {
-      return socket?.connected ? socket.id ?? null : null;
     },
 
     disconnect: closeSocket,

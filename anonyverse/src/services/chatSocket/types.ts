@@ -6,6 +6,22 @@ export interface JoinChatAck {
 }
 
 
+export type EndChatStatus = 'ended' | 'error' | 'rate_limited';
+
+/** `{ok: true, status: 'ended'}` means the chat is over (or already was) and is now reportable. */
+export interface EndChatAck {
+  ok: boolean;
+  status: EndChatStatus;
+}
+
+/** Rejection reason for endChat() when no ack arrives in time or the socket isn't (or stops being) connected. */
+export type EndChatErrorReason = 'END_CHAT_TIMEOUT' | 'NOT_CONNECTED';
+
+export interface EndChatError {
+  reason: EndChatErrorReason;
+}
+
+
 export interface MatchFoundEvent {
   partner: string;
 }

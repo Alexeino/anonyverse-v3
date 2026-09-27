@@ -18,6 +18,12 @@ export class ApiError extends Error {
 export interface PostJsonOptions {
   /** Access token sent as `Authorization: Bearer <token>` for authenticated routes. */
   accessToken?: string;
+  /**
+   * Aborts the request (including reading its body) after this many ms,
+   * throwing an ApiError with no status like any network failure. Without
+   * it RN's fetch has no timeout of its own on Android.
+   */
+  timeoutMs?: number;
 }
 
 export async function postJson<TResponse>(
@@ -36,24 +42,52 @@ export async function postJson<TResponse>(
     headers.Authorization = `Bearer ${options.accessToken}`;
   }
 
+  if (__DEV__) {
+    console.log(`[HTTP] → POST ${path}`);
+  }
+
+  const controller = options.timeoutMs === undefined ? undefined : new AbortController();
+  const timeoutId = controller ? setTimeout(() => controller.abort(), options.timeoutMs) : undefined;
+
   try {
-    response = await fetch(`${env.apiBaseUrl}${path}`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    });
-  } catch (error) {
-    throw new ApiError(
-      error instanceof Error ? error.message : 'Network request failed',
-    );
-  }
+    try {
+      response = await fetch(`${env.apiBaseUrl}${path}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller?.signal,
+      });
+    } catch (error) {
+      if (__DEV__) {
+        console.log(`[HTTP] ✕ POST ${path} ${controller?.signal.aborted ? 'timed out' : 'network error'}`, error);
+      }
+      throw new ApiError(
+        controller?.signal.aborted
+          ? `POST ${path} timed out after ${options.timeoutMs}ms`
+          : error instanceof Error ? error.message : 'Network request failed',
+      );
+    }
 
-  if (!response.ok) {
-    throw new ApiError(
-      `POST ${path} failed with status ${response.status}`,
-      response.status,
-    );
-  }
+    if (__DEV__) {
+      console.log(`[HTTP] ← POST ${path} ${response.status}`);
+    }
 
-  return (await response.json()) as TResponse;
+    if (!response.ok) {
+      throw new ApiError(
+        `POST ${path} failed with status ${response.status}`,
+        response.status,
+      );
+    }
+
+    try {
+      return (await response.json()) as TResponse;
+    } catch (error) {
+      if (controller?.signal.aborted) {
+        throw new ApiError(`POST ${path} timed out after ${options.timeoutMs}ms`);
+      }
+      throw error;
+    }
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }

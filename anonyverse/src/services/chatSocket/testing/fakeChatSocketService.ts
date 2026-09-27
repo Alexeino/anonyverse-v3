@@ -2,6 +2,7 @@ import type { AccessTokenResult, TokenProvider } from '../../session/tokenProvid
 import type { ChatSocketService } from '../ChatSocketService';
 import type {
   ChatEndedEvent,
+  EndChatAck,
   JoinChatAck,
   MatchFoundEvent,
   QueuedEvent,
@@ -27,11 +28,13 @@ function handlerSet<T>() {
 export interface FakeChatSocketServiceOptions {
   connectImpl?: () => Promise<void>;
   joinChatImpl?: () => Promise<JoinChatAck>;
+  endChatImpl?: () => Promise<EndChatAck>;
 }
 
 export function makeFakeChatSocketService({
   connectImpl = () => Promise.resolve(),
   joinChatImpl = () => Promise.resolve({ ok: true, status: 'queued' }),
+  endChatImpl = () => Promise.resolve({ ok: true, status: 'ended' }),
 }: FakeChatSocketServiceOptions = {}) {
   const matchFound = handlerSet<MatchFoundEvent>();
   const queued = handlerSet<QueuedEvent>();
@@ -49,7 +52,7 @@ export function makeFakeChatSocketService({
   const sendTypingStop = jest.fn();
   const sendSkipChat = jest.fn();
   const sendEndChat = jest.fn();
-  const getSocketId = jest.fn((): string | null => 'sid-1');
+  const endChat = jest.fn(() => endChatImpl());
   // Like the real service, closing the socket ourselves is not a lost connection.
   const disconnect = jest.fn();
 
@@ -66,10 +69,10 @@ export function makeFakeChatSocketService({
     onPartnerTypingStop: handler => partnerTypingStop.subscribe(() => handler()),
     sendSkipChat,
     sendEndChat,
+    endChat,
     onChatEnded: chatEnded.subscribe,
     onServerError: serverError.subscribe,
     onConnectionLost: handler => connectionLost.subscribe(() => handler()),
-    getSocketId,
     disconnect,
   };
 
@@ -82,7 +85,7 @@ export function makeFakeChatSocketService({
     sendTypingStop,
     sendSkipChat,
     sendEndChat,
-    getSocketId,
+    endChat,
     disconnect,
     emitMatchFound: (event: MatchFoundEvent = { partner: 'partner-2' }) => matchFound.emit(event),
     emitQueued: () => queued.emit({ partner: null }),

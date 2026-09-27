@@ -51,6 +51,9 @@ export function useAnalyticsCapture() {
         if (options?.requiresDebug && !DEBUG) {
             return;
         }
+        if (__DEV__) {
+            console.log(`[Analytics] capture ${eventName}`, properties, ph ? '' : '(PostHog not configured — not sent)')
+        }
         ph?.capture(eventName, properties)
     }, [ph])
 }
@@ -91,6 +94,9 @@ export function useIdentifyDevice() {
     const ph = usePostHog()
 
     return useCallback((deviceId: string) => {
+        if (__DEV__) {
+            console.log('[Analytics] identify', deviceId)
+        }
         ph?.identify(deviceId)
     }, [ph])
 }

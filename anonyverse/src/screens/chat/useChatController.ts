@@ -35,6 +35,9 @@ export interface ReportSnackbar {
 
 export type RematchReason = 'you_skipped' | 'partner_skipped' | 'partner_ended' | 'reconnecting';
 
+/** State of the one-tap "Report that chat" link on the "finding someone new" modal. */
+export type QuickReportStatus = 'idle' | 'sending' | 'reported';
+
 export interface UseChatControllerResult {
   messages: ChatMessage[];
   inputValue: string;
@@ -77,11 +80,20 @@ export interface UseChatControllerResult {
   /** Closes the report sheet; ignored while a report is being sent. */
   handleDismissReport: () => void;
   /**
-   * Sends the report, then — whatever its outcome — ends the chat and looks
-   * for a new match. The server works out who is reported from our chat
-   * state, so ending the chat must wait for the report.
+   * Ends the chat (waiting for end_chat's ack), reports the partner, and only
+   * once the report has finished looks for a new match. The server only accepts reports for an ended
+   * chat; if end_chat isn't confirmed nothing is reported and we leave by
+   * reconnecting instead.
    */
   handleSubmitReport: (reportType: ReportType, description?: string) => void;
+  /** State of the one-tap "Report that chat" link while rematching. */
+  quickReportStatus: QuickReportStatus;
+  /**
+   * Reports the chat that just ended, with no reason, while matchmaking
+   * carries on. The report names that chat's partner, so a new match
+   * meanwhile doesn't change who it reaches.
+   */
+  handleQuickReport: () => void;
   handleBack: () => void;
 }
 
@@ -105,16 +117,17 @@ const REJOIN_GAVE_UP_MESSAGE = "Couldn't find a new match right now. Stop search
 // A report that failed on a 5xx or the network is retried after each of
 // these delays. A report that returned 200 is never retried: the server
 // doesn't deduplicate, so a retry would file a second report.
-const REPORT_RETRY_DELAYS_MS = [1000, 2000];
+// Retries are off for now: a timed-out or dropped request may still have
+// been stored, and a retry would then file it twice. A 401 is still retried
+// once after a token refresh, since the server stored nothing.
+const REPORT_RETRY_DELAYS_MS: number[] = [];
 const REPORT_SNACKBAR_MS = 4000;
 const REPORT_SUCCESS_MESSAGE = 'Reported successfully. Thanks, this helps us keep Anonyverse safe.';
-const REPORT_CHAT_ENDED_MESSAGE = "That chat had already ended, so the report couldn't be sent.";
+// 404: the report window passed, it was already reported, or a newer chat has ended since.
+const REPORT_NOT_REPORTABLE_MESSAGE = 'This chat can no longer be reported.';
 const REPORT_FAILED_MESSAGE = "Couldn't send the report, but you've left that chat.";
-// After a report we end the chat ourselves (skip_chat is too tightly rate
-// limited) and wait for the server's chat_ended before re-joining, so the
-// join can't be processed while we're still paired. If it doesn't come —
-// end_chat throttled or lost — closing our socket ends the chat instead.
-const END_CHAT_CONFIRM_TIMEOUT_MS = 3000;
+const QUICK_REPORT_SUCCESS_MESSAGE = 'Reported. Thanks, this helps us keep Anonyverse safe.';
+const QUICK_REPORT_FAILED_MESSAGE = "Couldn't send the report. Try again.";
 
 // send_message drops anything over 2000 characters silently.
 const MAX_MESSAGE_LENGTH = 2000;
@@ -164,25 +177,25 @@ function parseIncomingMessage(raw: string): { text: string; replyTo?: ReplyPrevi
   return { text: raw };
 }
 
-type SubmitReportResult = ReportOutcome | { status: 'reauth_required' } | { status: 'offline' };
+type SubmitReportResult = ReportOutcome | { status: 'reauth_required' };
 
 /**
- * Sends one report, refreshing the token once on a 401 and retrying
+ * Reports `reportedUserSid`, refreshing the token once on a 401 and retrying
  * 5xx/network failures with backoff. Resolves null once `isStale` says the
- * result is no longer wanted (the chat ended or the user left meanwhile).
+ * result is no longer wanted (the user left meanwhile).
  */
 async function submitReportWithRetries({
   reportService,
   tokenProvider,
-  getSocketId,
+  reportedUserSid,
   reportType,
   description,
   isStale,
 }: {
   reportService: ReportService;
   tokenProvider: TokenProvider;
-  getSocketId: () => string | null;
-  reportType: ReportType;
+  reportedUserSid: string;
+  reportType?: ReportType;
   description?: string;
   isStale: () => boolean;
 }): Promise<SubmitReportResult | null> {
@@ -191,6 +204,9 @@ async function submitReportWithRetries({
   let retries = 0;
 
   for (;;) {
+    if (isStale()) {
+      return null;
+    }
     const tokenResult = await tokenProvider.getFreshAccessToken(forceRefresh ? { forceRefresh: true } : undefined);
     if (isStale()) {
       return null;
@@ -203,16 +219,11 @@ async function submitReportWithRetries({
     if (tokenResult.status === 'failed') {
       outcome = { status: 'failed', retryable: true, error: tokenResult.error };
     } else {
-      // Read right before sending: a stale sid is rejected with 403.
-      const reportingUserSid = getSocketId();
-      if (!reportingUserSid) {
-        return { status: 'offline' };
-      }
       outcome = await reportService.reportUser({
         accessToken: tokenResult.accessToken,
+        reportedUserSid,
         reportType,
         description,
-        reportingUserSid,
       });
       if (isStale()) {
         return null;
@@ -228,9 +239,6 @@ async function submitReportWithRetries({
       await new Promise<void>(resolve => setTimeout(resolve, REPORT_RETRY_DELAYS_MS[retries]));
       retries += 1;
       forceRefresh = false;
-      if (isStale()) {
-        return null;
-      }
       continue;
     }
     return outcome;
@@ -252,6 +260,7 @@ const DISCONNECTED_MESSAGE = 'You were disconnected from the chat.';
  */
 export function useChatController(
   chatSocketService: ChatSocketService,
+  partnerSid: string,
   selection: TopicsSelection,
   tokenProvider: TokenProvider,
   onLeave: (reason: ChatLeaveReason) => void,
@@ -277,6 +286,7 @@ export function useChatController(
   const [showReportSheet, setShowReportSheet] = useState(false);
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [reportSnackbar, setReportSnackbar] = useState<ReportSnackbar | null>(null);
+  const [quickReportStatus, setQuickReportStatus] = useState<QuickReportStatus>('idle');
   const serviceRef = useRef(chatSocketService);
   serviceRef.current = chatSocketService;
   const selectionRef = useRef(selection);
@@ -289,8 +299,12 @@ export function useChatController(
   const skipBucketRef = useRef({ tokens: SKIP_BUCKET_SIZE, lastRefill: Date.now() });
   const skipUnavailableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reportSnackbarTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Set while we wait for chat_ended after ending a reported chat.
-  const endChatConfirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The partner of the current chat — or, while rematching, of the chat that
+  // just ended. Reports name this sid, so it only moves on at the next match.
+  const partnerSidRef = useRef(partnerSid);
+  // Set while a report's end_chat is waiting for its ack: the chat_ended
+  // {ended, self} it produces must not tear down the report in progress.
+  const endingForReportRef = useRef(false);
   // The findMatch loop re-joining the queue, if one is running. Aborted
   // whenever it stops being wanted (a match arrived, a newer re-join
   // started, or the user left), so it can't join while already chatting.
@@ -300,10 +314,12 @@ export function useChatController(
   const latestRef = useRef({ tokenProvider, onReauthRequired, reportService });
   latestRef.current = { tokenProvider, onReauthRequired, reportService };
   // Bumped whenever the report sheet is torn down (chat ended, new match,
-  // reconnect), so an in-flight report's result is dropped rather than
-  // applied to a chat it wasn't about.
+  // reconnect), so a report still waiting on end_chat is abandoned rather
+  // than sent for a chat it wasn't about.
   const reportGenerationRef = useRef(0);
   const reportSubmittingRef = useRef(false);
+  const quickReportStatusRef = useRef(quickReportStatus);
+  quickReportStatusRef.current = quickReportStatus;
 
   const showToast = useCallback((message: string) => {
     if (skipUnavailableTimerRef.current) {
@@ -337,9 +353,6 @@ export function useChatController(
       if (reportSnackbarTimerRef.current) {
         clearTimeout(reportSnackbarTimerRef.current);
       }
-      if (endChatConfirmTimerRef.current) {
-        clearTimeout(endChatConfirmTimerRef.current);
-      }
       leavingRef.current = true;
       rejoinRef.current?.abort();
       serviceRef.current.disconnect();
@@ -354,6 +367,7 @@ export function useChatController(
   const resetReport = useCallback(() => {
     reportGenerationRef.current += 1;
     reportSubmittingRef.current = false;
+    endingForReportRef.current = false;
     setShowReportSheet(false);
     setReportSubmitting(false);
   }, []);
@@ -364,16 +378,6 @@ export function useChatController(
     }
     setReportSnackbar(snackbar);
     reportSnackbarTimerRef.current = setTimeout(() => setReportSnackbar(null), REPORT_SNACKBAR_MS);
-  }, []);
-
-  /** Stops waiting for a reported chat's chat_ended; true if we were waiting. */
-  const clearEndChatConfirm = useCallback(() => {
-    if (!endChatConfirmTimerRef.current) {
-      return false;
-    }
-    clearTimeout(endChatConfirmTimerRef.current);
-    endChatConfirmTimerRef.current = null;
-    return true;
   }, []);
 
   /**
@@ -421,37 +425,16 @@ export function useChatController(
 
   /**
    * Ends the chat by closing our socket — the server ends it at once — then
-   * reconnects and re-joins. The fallback when end_chat can't be used or
-   * isn't confirmed; the partner sees `disconnected` instead of `ended`.
+   * reconnects and re-joins. The fallback when end_chat isn't confirmed; the
+   * partner sees `disconnected` instead of `ended`.
    */
   const reconnectAndRejoin = useCallback(() => {
-    clearEndChatConfirm();
     if (leavingRef.current) {
       return;
     }
     serviceRef.current.disconnect();
     rejoin(true);
-  }, [clearEndChatConfirm, rejoin]);
-
-  /**
-   * Leaves the chat after a report (sent or not) and looks for someone new.
-   * The server doesn't requeue us after end_chat, so we join_chat ourselves
-   * once chat_ended {ended, by: self} confirms the chat is over.
-   */
-  const leaveReportedChat = useCallback(
-    (canEndChat: boolean) => {
-      setRematchReason('you_skipped');
-      setRematchState('rematching');
-      if (!canEndChat) {
-        reconnectAndRejoin();
-        return;
-      }
-      clearEndChatConfirm();
-      serviceRef.current.sendEndChat();
-      endChatConfirmTimerRef.current = setTimeout(reconnectAndRejoin, END_CHAT_CONFIRM_TIMEOUT_MS);
-    },
-    [clearEndChatConfirm, reconnectAndRejoin],
-  );
+  }, [rejoin]);
 
   /**
    * Our own connection is gone (or may be: the app was backgrounded), so
@@ -463,7 +446,6 @@ export function useChatController(
       return;
     }
     abortRejoin();
-    clearEndChatConfirm();
     if (typingStopTimerRef.current) {
       clearTimeout(typingStopTimerRef.current);
       typingStopTimerRef.current = null;
@@ -478,7 +460,7 @@ export function useChatController(
     setRematchState('rematching');
     serviceRef.current.disconnect();
     rejoin(true);
-  }, [abortRejoin, clearEndChatConfirm, rejoin, resetReport]);
+  }, [abortRejoin, rejoin, resetReport]);
 
   useAppForeground(resume);
 
@@ -487,16 +469,13 @@ export function useChatController(
     // button tap itself, so the "finding someone new" state appears the
     // same way for both people in the chat — whichever of them tapped Skip.
     const unsubscribeChatEnded = chatSocketService.onChatEnded(event => {
+      // Our own end_chat for a report: its ack drives what happens next.
+      if (event.reason === 'ended' && event.by === 'self' && endingForReportRef.current) {
+        return;
+      }
       // Whatever was open, there's no partner left to save, leave or report.
       setShowLeaveConfirm(false);
       resetReport();
-      // Whichever chat_ended arrives settles a pending leave-after-report.
-      const leavingReportedChat = clearEndChatConfirm();
-      if (event.reason === 'ended' && event.by === 'self' && leavingReportedChat) {
-        // Our end_chat after a report went through — now look for someone new.
-        rejoin(false);
-        return;
-      }
       if (event.reason === 'skipped') {
         // The server requeues both sides after a skip, and match_found or
         // queued follows on its own. Don't join_chat here: it would only
@@ -520,7 +499,10 @@ export function useChatController(
         rejoin(false);
       }
     });
-    const unsubscribeMatchFound = chatSocketService.onMatchFound(() => {
+    const unsubscribeMatchFound = chatSocketService.onMatchFound(event => {
+      partnerSidRef.current = event.partner;
+      quickReportStatusRef.current = 'idle';
+      setQuickReportStatus('idle');
       abortRejoin();
       setRematchState('idle');
       setRematchReason(null);
@@ -536,22 +518,11 @@ export function useChatController(
     // this a rate-limited skip (or message) would silently do nothing.
     const unsubscribeServerError = chatSocketService.onServerError(event => {
       if (event.reason === 'not_in_chat') {
-        // Our end_chat after a report found the chat already over — join now.
-        if (clearEndChatConfirm()) {
-          rejoin(false);
-          return;
-        }
         // The server thinks we're not chatting but the UI does: we missed
         // a disconnect. Only meaningful while the UI shows a live chat.
         if (rematchStateRef.current === 'idle') {
           resume();
         }
-        return;
-      }
-      // Most likely our end_chat after a report was throttled, so the chat is
-      // still running — end it by reconnecting rather than waiting it out.
-      if (event.reason === 'rate_limited' && endChatConfirmTimerRef.current) {
-        reconnectAndRejoin();
         return;
       }
       // While rematching the toast would sit hidden under the modal, which
@@ -580,7 +551,7 @@ export function useChatController(
       unsubscribeConnectionLost();
       abortRejoin();
     };
-  }, [chatSocketService, showToast, rejoin, resume, abortRejoin, resetReport, clearEndChatConfirm, reconnectAndRejoin]);
+  }, [chatSocketService, showToast, rejoin, resume, abortRejoin, resetReport]);
 
   useEffect(() => {
     const clearPartnerTypingTimeout = () => {
@@ -732,28 +703,9 @@ export function useChatController(
     setShowReportSheet(false);
   }, []);
 
-  const handleSubmitReport = useCallback(
-    async (reportType: ReportType, description?: string) => {
-      if (reportSubmittingRef.current) {
-        return;
-      }
-      reportSubmittingRef.current = true;
-      setReportSubmitting(true);
-      const generation = reportGenerationRef.current;
-      const isStale = () => generation !== reportGenerationRef.current || leavingRef.current;
-
-      const result = await submitReportWithRetries({
-        reportService: latestRef.current.reportService,
-        tokenProvider: latestRef.current.tokenProvider,
-        getSocketId: () => serviceRef.current.getSocketId(),
-        reportType,
-        description,
-        isStale,
-      });
-      if (result === null || isStale()) {
-        return;
-      }
-
+  /** Shows a finished report's outcome; `quick` picks the rematch link's wording. */
+  const showReportOutcome = useCallback(
+    (result: ReportOutcome | { status: 'reauth_required' }, quick: boolean) => {
       if (result.status === 'reauth_required') {
         console.error('[Chat] Session expired and could not be refreshed — sending back to Entry.');
         leavingRef.current = true;
@@ -761,14 +713,12 @@ export function useChatController(
         latestRef.current.onReauthRequired();
         return;
       }
-
-      resetReport();
       switch (result.status) {
         case 'reported':
-          showReportSnackbar({ text: REPORT_SUCCESS_MESSAGE, tone: 'success' });
+          showReportSnackbar({ text: quick ? QUICK_REPORT_SUCCESS_MESSAGE : REPORT_SUCCESS_MESSAGE, tone: 'success' });
           break;
         case 'nothing_to_report':
-          showReportSnackbar({ text: REPORT_CHAT_ENDED_MESSAGE, tone: 'error' });
+          showReportSnackbar({ text: REPORT_NOT_REPORTABLE_MESSAGE, tone: 'error' });
           break;
         case 'failed':
           // Log only what we produced — `error` may carry server response detail.
@@ -777,18 +727,138 @@ export function useChatController(
             retryable: result.retryable,
             error: result.error instanceof Error ? result.error.message : undefined,
           });
-          showReportSnackbar({ text: REPORT_FAILED_MESSAGE, tone: 'error' });
+          showReportSnackbar({ text: quick ? QUICK_REPORT_FAILED_MESSAGE : REPORT_FAILED_MESSAGE, tone: 'error' });
           break;
         default:
-          // 'sid_rejected' (403), a second 401, or 'offline'.
+          // A second 401.
           console.error('[Chat] Could not send the report.', { status: result.status });
-          showReportSnackbar({ text: REPORT_FAILED_MESSAGE, tone: 'error' });
+          showReportSnackbar({ text: quick ? QUICK_REPORT_FAILED_MESSAGE : REPORT_FAILED_MESSAGE, tone: 'error' });
       }
-      // With no live socket there's nothing to send end_chat on.
-      leaveReportedChat(result.status !== 'offline');
     },
-    [resetReport, showReportSnackbar, leaveReportedChat],
+    [showReportSnackbar],
   );
+
+  const handleSubmitReport = useCallback(
+    async (reportType: ReportType, description?: string) => {
+      if (reportSubmittingRef.current) {
+        return;
+      }
+      reportSubmittingRef.current = true;
+      setReportSubmitting(true);
+      const generation = reportGenerationRef.current;
+      const reportedUserSid = partnerSidRef.current;
+
+      // The server only takes reports for an ended chat, so end it first.
+      endingForReportRef.current = true;
+      let ended = false;
+      try {
+        const ack = await serviceRef.current.endChat();
+        ended = ack.ok;
+        if (!ack.ok) {
+          console.error('[Chat] end_chat was not confirmed before reporting.', { status: ack.status });
+        }
+      } catch (error) {
+        console.error('[Chat] end_chat was not confirmed before reporting.', error);
+      }
+      if (leavingRef.current) {
+        return;
+      }
+      // The chat ended some other way meanwhile (partner left or skipped,
+      // our socket dropped): it's over either way, and that path has already
+      // started the rematch.
+      const endedElsewhere = generation !== reportGenerationRef.current;
+      if (!endedElsewhere) {
+        resetReport();
+        setRematchReason('you_skipped');
+        setRematchState('rematching');
+        if (!ended) {
+          // Don't report a chat the server may not have ended. Closing our
+          // socket does end it, and the rematch modal's link can report it then.
+          showReportSnackbar({ text: REPORT_FAILED_MESSAGE, tone: 'error' });
+          reconnectAndRejoin();
+          return;
+        }
+        // end_chat doesn't requeue us. The re-join waits for the report
+        // below: joining now could match this same partner again before the
+        // report's 5-minute block exists. end_chat's own 20s block covers a
+        // report that fails.
+      }
+      quickReportStatusRef.current = 'sending';
+      setQuickReportStatus('sending');
+      const result = await submitReportWithRetries({
+        reportService: latestRef.current.reportService,
+        tokenProvider: latestRef.current.tokenProvider,
+        reportedUserSid,
+        reportType,
+        description,
+        isStale: () => leavingRef.current,
+      });
+      if (result === null || leavingRef.current) {
+        return;
+      }
+      // Only while this chat's rematch link is still showing.
+      if (partnerSidRef.current === reportedUserSid) {
+        // After a success the link would report the same partner again (the
+        // server doesn't deduplicate).
+        const nextStatus = result.status === 'reported' ? 'reported' : 'idle';
+        quickReportStatusRef.current = nextStatus;
+        setQuickReportStatus(nextStatus);
+      }
+      // Unlike the quick report, a failure is still shown over a new chat:
+      // the user explicitly submitted this one, and no retry link is implied.
+      showReportOutcome(result, false);
+      // Re-join now that the report is done, whatever its outcome — unless
+      // the session expired, or something else already started a re-join
+      // (a reconnect) or a new chat meanwhile.
+      if (
+        !endedElsewhere &&
+        result.status !== 'reauth_required' &&
+        !leavingRef.current &&
+        rejoinRef.current === null &&
+        rematchStateRef.current === 'rematching' &&
+        partnerSidRef.current === reportedUserSid
+      ) {
+        rejoin(false);
+      }
+    },
+    [resetReport, showReportSnackbar, reconnectAndRejoin, rejoin, showReportOutcome],
+  );
+
+  const handleQuickReport = useCallback(async () => {
+    if (rematchStateRef.current !== 'rematching' || quickReportStatusRef.current !== 'idle') {
+      return;
+    }
+    quickReportStatusRef.current = 'sending';
+    setQuickReportStatus('sending');
+    // Still the partner of the chat that just ended: no new match yet.
+    const reportedUserSid = partnerSidRef.current;
+
+    const result = await submitReportWithRetries({
+      reportService: latestRef.current.reportService,
+      tokenProvider: latestRef.current.tokenProvider,
+      reportedUserSid,
+      isStale: () => leavingRef.current,
+    });
+    if (result === null || leavingRef.current) {
+      return;
+    }
+    // An expired session ends the chat whether or not a new match arrived.
+    if (result.status === 'reauth_required') {
+      showReportOutcome(result, true);
+      return;
+    }
+
+    if (partnerSidRef.current === reportedUserSid) {
+      const nextStatus = result.status === 'reported' ? 'reported' : 'idle';
+      quickReportStatusRef.current = nextStatus;
+      setQuickReportStatus(nextStatus);
+    } else if (result.status !== 'reported') {
+      // A new chat has started: "Try again" would point at a link that's gone.
+      return;
+    }
+    // The report named that chat's partner, so it's accurate even over a new chat.
+    showReportOutcome(result, true);
+  }, [showReportOutcome]);
 
   const handleBack = useCallback(() => {
     if (rematchState === 'rematching') {
@@ -854,5 +924,7 @@ export function useChatController(
     handleOpenReport,
     handleDismissReport,
     handleSubmitReport,
+    quickReportStatus,
+    handleQuickReport,
   };
 }

@@ -21,10 +21,13 @@ export function createDevNoopChatSocketService(): ChatSocketService {
     sendEndChat: () => {
       console.log('[DevChat] sendEndChat (no-op, nothing is listening)');
     },
+    endChat: () => {
+      console.log('[DevChat] endChat (no-op, nothing is listening)');
+      return Promise.resolve({ ok: true, status: 'ended' });
+    },
     onChatEnded: () => () => {},
     onServerError: () => () => {},
     onConnectionLost: () => () => {},
-    getSocketId: () => 'dev-socket',
     disconnect: () => {},
   };
 }
