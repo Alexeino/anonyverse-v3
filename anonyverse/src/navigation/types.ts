@@ -23,8 +23,8 @@ export type RootStackParamList = {
    * from Chat List's "Start a chat" — same layout, no progress bar.
    */
   MoodSelect: { showProgress: boolean };
-  /** Pre-fills the type and records which screen the feedback was opened from. */
-  Feedback: FeedbackDefaults | undefined;
+  /** exitTo: where to land once the sheet closes, instead of going back. */
+  Feedback: (FeedbackDefaults & { exitTo?: 'ChatList' }) | undefined;
   DevMenu: undefined;
   DevTopics: { mood: Mood };
   DevFindingMatch: undefined;

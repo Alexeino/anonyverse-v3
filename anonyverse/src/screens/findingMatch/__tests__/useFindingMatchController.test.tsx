@@ -1,6 +1,6 @@
 import React from 'react';
 import ReactTestRenderer, { act } from 'react-test-renderer';
-import { AppState, type AppStateStatus } from 'react-native';
+import { AppState, BackHandler, type AppStateStatus } from 'react-native';
 import { usePostHog } from 'posthog-react-native';
 import type { ChatSocketService } from '../../../services/chatSocket/ChatSocketService';
 import type { ChatSocketConnectError } from '../../../services/chatSocket/types';
@@ -195,6 +195,29 @@ describe('useFindingMatchController', () => {
     // The handed-off socket now belongs to the Chat screen — unmounting
     // Finding Match after handoff must not tear it down out from under it.
     expect(fake.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('the hardware back button cancels the search like the close button', async () => {
+    // Jest uses the iOS BackHandler, which never stores the handler.
+    const addListener = jest
+      .spyOn(BackHandler, 'addEventListener')
+      .mockImplementation(() => ({ remove: () => {} }));
+    jest.useFakeTimers();
+    const fake = makeFakeChatSocketService();
+    const { tokenProvider } = makeFakeTokenProvider();
+    const harness = await render(tokenProvider, () => fake.service);
+
+    const [eventName, onBack] = addListener.mock.calls.at(-1) as unknown as [string, () => boolean];
+    let handled = false;
+    act(() => {
+      handled = onBack();
+    });
+
+    expect(eventName).toBe('hardwareBackPress');
+    expect(handled).toBe(true);
+    expect(harness.onClose).toHaveBeenCalledTimes(1);
+    expect(fake.service.disconnect).toHaveBeenCalled();
+    addListener.mockRestore();
   });
 
   it('handleClose during the handoff delay cancels the handoff even before the screen unmounts', async () => {

@@ -24,7 +24,13 @@ import type { ReportService } from '../../services/report/ReportService';
 import { restReportService } from '../../services/report/restReportService';
 import { tokenProvider } from '../../services/session/tokenProvider';
 import type { TopicsSelection } from '../topics/TopicsScreen';
-import { MAX_INPUT_LENGTH, useChatController, type ChatMessage, type ReportSnackbar } from './useChatController';
+import {
+  MAX_INPUT_LENGTH,
+  useChatController,
+  type ChatLeaveReason,
+  type ChatMessage,
+  type ReportSnackbar,
+} from './useChatController';
 import { FindingNewMatchModal } from './FindingNewMatchModal';
 import { LeaveChatConfirmModal } from './LeaveChatConfirmModal';
 import { ReportSheet } from './ReportSheet';
@@ -39,12 +45,14 @@ export interface ChatScreenProps {
   chatSocketService: ChatSocketService;
   /** What the user searched with — reused for every rejoin after the partner leaves or a reconnect. */
   selection: TopicsSelection;
-  onLeave: () => void;
+  onLeave: (reason: ChatLeaveReason) => void;
   /** The session expired and couldn't be refreshed — the app must go back through Entry. */
   onReauthRequired: () => void;
   /** Defaults to the real REST service; the DEV Menu preview passes a no-op. */
   reportService?: ReportService;
   onOpenSettings: () => void;
+  /** Called each time the server confirms the user skipped their partner. */
+  onSkipped?: () => void;
   isFocused?: boolean;
 }
 
@@ -55,6 +63,7 @@ export function ChatScreen({
   onReauthRequired,
   reportService = restReportService,
   onOpenSettings,
+  onSkipped,
   isFocused = true,
 }: ChatScreenProps) {
   const {
@@ -72,6 +81,7 @@ export function ChatScreen({
     handleCancelReply,
     rematchState,
     rematchReason,
+    selfSkipCount,
     skipUnavailableMessage,
     handleSkip,
     handleStopSearching,
@@ -96,6 +106,14 @@ export function ChatScreen({
     reportService,
     isFocused,
   );
+
+  const onSkippedRef = useRef(onSkipped);
+  onSkippedRef.current = onSkipped;
+  useEffect(() => {
+    if (selfSkipCount > 0) {
+      onSkippedRef.current?.();
+    }
+  }, [selfSkipCount]);
 
   const handleSavePartnerPlaceholder = () => {
     Alert.alert('Coming soon', 'Saving a partner to chat again later will be available soon.');

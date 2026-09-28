@@ -5,6 +5,8 @@ import type { FeedbackSubmission } from '../types';
 const SUBMISSION: FeedbackSubmission = {
   type: 'BUG',
   message: 'The chat screen freezes.',
+  reasons: ['BUG_APP_FROZE'],
+  trigger: 'MANUAL',
   rating: 2,
   screen: 'ChatScreen',
 };
@@ -39,10 +41,27 @@ describe('restFeedbackService.submit', () => {
     expect(JSON.parse(init.body as string)).toEqual({
       type: 'BUG',
       message: 'The chat screen freezes.',
+      reasons: ['BUG_APP_FROZE'],
+      trigger: 'MANUAL',
       rating: 2,
       screen: 'ChatScreen',
       os_version: String(Platform.Version),
     });
+  });
+
+  it('sends tap-only feedback with a null message', async () => {
+    const fetchMock = mockFetchOnce({ id: 2, status: 'NEW', created_at: '' }, 201);
+
+    await restFeedbackService.submit(
+      { ...SUBMISSION, message: null, rating: null, reasons: ['BUG_DISCONNECTED'], trigger: 'CHAT_EXIT' },
+      'access-token',
+    );
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.message).toBeNull();
+    expect(body.reasons).toEqual(['BUG_DISCONNECTED']);
+    expect(body.trigger).toBe('CHAT_EXIT');
   });
 
   it('never sends a device_id — the backend takes it from the token', async () => {

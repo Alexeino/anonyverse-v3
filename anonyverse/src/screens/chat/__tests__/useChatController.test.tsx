@@ -347,6 +347,21 @@ describe('useChatController', () => {
     expect(harness.latest.rematchState).toBe('rematching');
   });
 
+  it('counts only skips confirmed as made by this user', async () => {
+    const fake = makeChatSocketService();
+    const harness = await render(fake.service);
+
+    act(() => {
+      fake.emitChatEnded({ reason: 'skipped', by: 'partner' });
+    });
+    expect(harness.latest.selfSkipCount).toBe(0);
+
+    act(() => {
+      fake.emitChatEnded({ reason: 'skipped', by: 'self' });
+    });
+    expect(harness.latest.selfSkipCount).toBe(1);
+  });
+
   it.each(['ended', 'disconnected'] as const)(
     'chat_ended with reason "%s" and by "partner" sets rematching and re-joins the queue',
     async reason => {

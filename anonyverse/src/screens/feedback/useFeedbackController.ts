@@ -3,36 +3,46 @@ import { useAnalyticsCapture } from '../../hooks/usePosthogHooks';
 import type { FeedbackService } from '../../services/feedback/FeedbackService';
 import {
   FEEDBACK_MESSAGE_MAX_LENGTH,
+  MAX_FEEDBACK_REASONS,
   type FeedbackOutcome,
+  type FeedbackReason,
   type FeedbackSubmission,
+  type FeedbackTrigger,
   type FeedbackType,
 } from '../../services/feedback/types';
 import type { AccessTokenResult, TokenProvider } from '../../services/session/tokenProvider';
+import { bugReasonsForScreen, ratingFollowUp } from './feedbackOptions';
 
-export type FeedbackPhase = 'editing' | 'submitting' | 'submitted';
+export type FeedbackStep = 'question' | 'bug' | 'rating' | 'submitted';
 
 export type FeedbackErrorReason = Exclude<FeedbackOutcome['status'], 'submitted'>;
 
 export interface FeedbackDefaults {
+  /** 'BUG' opens straight on the bug options. */
   type?: FeedbackType;
-  /** Screen the user came from, e.g. "ChatListScreen". Stored with the feedback. */
+  /** Screen the user came from; picks the bug options. */
   screen?: string;
+  /** Defaults to MANUAL. */
+  trigger?: FeedbackTrigger;
 }
 
 export interface UseFeedbackControllerResult {
-  phase: FeedbackPhase;
-  type: FeedbackType;
-  message: string;
+  step: FeedbackStep;
+  submitting: boolean;
   rating: number | null;
+  reasons: FeedbackReason[];
+  reasonOptions: FeedbackReason[];
+  followUpQuestion: string | null;
+  message: string;
   /** Trimmed length, which is what the backend validates. */
   messageLength: number;
   isMessageTooLong: boolean;
   canSubmit: boolean;
   error: FeedbackErrorReason | null;
-  setType: (type: FeedbackType) => void;
+  answerSomethingWrong: (wentWrong: boolean) => void;
+  setRating: (rating: number) => void;
+  toggleReason: (reason: FeedbackReason) => void;
   setMessage: (message: string) => void;
-  /** Tapping the selected rating again clears it — rating is optional. */
-  toggleRating: (rating: number) => void;
   submit: () => Promise<void>;
 }
 
@@ -86,22 +96,49 @@ export function useFeedbackController(
   tokenProvider: TokenProvider,
   feedbackService: FeedbackService,
 ): UseFeedbackControllerResult {
-  const [phase, setPhase] = useState<FeedbackPhase>('editing');
-  const [type, setType] = useState<FeedbackType>(defaults.type ?? 'GENERAL');
+  const [step, setStep] = useState<FeedbackStep>(defaults.type === 'BUG' ? 'bug' : 'question');
+  const [submitting, setSubmitting] = useState(false);
+  const [rating, setRatingState] = useState<number | null>(null);
+  const [reasons, setReasons] = useState<FeedbackReason[]>([]);
   const [message, setMessage] = useState('');
-  const [rating, setRating] = useState<number | null>(null);
   const [error, setError] = useState<FeedbackErrorReason | null>(null);
-  // Guards against a double tap firing two requests before the phase
-  // update re-renders the button as loading.
+  // Blocks a double tap before the re-render disables the button.
   const submittingRef = useRef(false);
   const captureAnalytics = useAnalyticsCapture();
 
-  const messageLength = message.trim().length;
+  const followUp = rating === null ? null : ratingFollowUp(rating);
+  const reasonOptions =
+    step === 'bug' ? bugReasonsForScreen(defaults.screen) : followUp?.reasons ?? [];
+  const trimmedMessage = message.trim();
+  const messageLength = trimmedMessage.length;
   const isMessageTooLong = messageLength > FEEDBACK_MESSAGE_MAX_LENGTH;
-  const canSubmit = phase === 'editing' && messageLength > 0 && !isMessageTooLong;
+  const hasAnswer =
+    step === 'bug' ? reasons.length > 0 || messageLength > 0 : step === 'rating' && rating !== null;
+  const canSubmit = hasAnswer && !isMessageTooLong && !submitting;
 
-  const toggleRating = useCallback((value: number) => {
-    setRating(current => (current === value ? null : value));
+  const answerSomethingWrong = useCallback((wentWrong: boolean) => {
+    setError(null);
+    setStep(wentWrong ? 'bug' : 'rating');
+  }, []);
+
+  const setRating = useCallback(
+    (value: number) => {
+      // Options don't carry over between rating bands.
+      if (rating === null || ratingFollowUp(rating).question !== ratingFollowUp(value).question) {
+        setReasons([]);
+      }
+      setRatingState(value);
+    },
+    [rating],
+  );
+
+  const toggleReason = useCallback((reason: FeedbackReason) => {
+    setReasons(current => {
+      if (current.includes(reason)) {
+        return current.filter(r => r !== reason);
+      }
+      return current.length >= MAX_FEEDBACK_REASONS ? current : [...current, reason];
+    });
   }, []);
 
   const submit = useCallback(async () => {
@@ -109,28 +146,36 @@ export function useFeedbackController(
       return;
     }
 
+    const type: FeedbackType = step === 'bug' ? 'BUG' : followUp?.type ?? 'GENERAL';
+    const trigger = defaults.trigger ?? 'MANUAL';
     submittingRef.current = true;
     setError(null);
-    setPhase('submitting');
+    setSubmitting(true);
 
     const outcome = await submitWithFreshToken(tokenProvider, feedbackService, {
       type,
-      message: message.trim(),
-      rating,
+      message: trimmedMessage || null,
+      reasons,
+      trigger,
+      rating: step === 'rating' ? rating : null,
       screen: defaults.screen ?? null,
     });
 
     submittingRef.current = false;
+    setSubmitting(false);
 
     if (outcome.status === 'submitted') {
       // Never send the message itself to analytics — it's free text and
       // may contain personal information.
       captureAnalytics('feedback_submitted', {
         type,
-        has_rating: rating !== null,
+        trigger,
+        reasons,
+        has_rating: step === 'rating',
+        has_message: trimmedMessage.length > 0,
         screen: defaults.screen ?? null,
       });
-      setPhase('submitted');
+      setStep('submitted');
       return;
     }
 
@@ -138,22 +183,36 @@ export function useFeedbackController(
       console.error('[Feedback] Submission failed.', outcome.error);
     }
     setError(outcome.status);
-    // Back to editing so the typed message is kept and the user can retry.
-    setPhase('editing');
-  }, [canSubmit, tokenProvider, feedbackService, type, message, rating, defaults.screen, captureAnalytics]);
+  }, [
+    canSubmit,
+    step,
+    followUp,
+    defaults.trigger,
+    defaults.screen,
+    tokenProvider,
+    feedbackService,
+    trimmedMessage,
+    reasons,
+    rating,
+    captureAnalytics,
+  ]);
 
   return {
-    phase,
-    type,
-    message,
+    step,
+    submitting,
     rating,
+    reasons,
+    reasonOptions,
+    followUpQuestion: followUp?.question ?? null,
+    message,
     messageLength,
     isMessageTooLong,
     canSubmit,
     error,
-    setType,
+    answerSomethingWrong,
+    setRating,
+    toggleReason,
     setMessage,
-    toggleRating,
     submit,
   };
 }

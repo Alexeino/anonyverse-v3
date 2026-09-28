@@ -13,6 +13,8 @@ export const restFeedbackService: FeedbackService = {
     const request: FeedbackRequest = {
       type: submission.type,
       message: submission.message,
+      reasons: submission.reasons,
+      trigger: submission.trigger,
       rating: submission.rating,
       screen: submission.screen,
       // Platform.Version is a number on Android (API level) and a string on iOS.

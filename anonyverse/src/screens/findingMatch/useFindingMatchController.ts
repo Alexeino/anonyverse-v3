@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { BackHandler } from 'react-native';
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
 import { findMatch } from '../../services/chatSocket/findMatch';
 import type { ChatSocketConnectErrorReason } from '../../services/chatSocket/types';
@@ -188,6 +189,15 @@ export function useFindingMatchController(
     }
     onClose();
   }, [onClose]);
+
+  // Rendered in place, so Android back would otherwise pop the whole route.
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      handleClose();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [handleClose]);
 
   return { phase, error, handleClose };
 }
