@@ -50,6 +50,8 @@ export interface UseChatControllerResult {
   handleCancelReply: () => void;
   rematchState: RematchState;
   rematchReason: RematchReason | null;
+  /** Goes up by one each time the server confirms this user skipped their partner. */
+  selfSkipCount: number;
   skipUnavailableMessage: string | null;
   handleSkip: () => void;
   handleStopSearching: () => void;
@@ -235,6 +237,9 @@ async function submitReportWithRetries({
   }
 }
 
+/** mid_chat: the user ended a live chat. stopped_searching: the partner was already gone. */
+export type ChatLeaveReason = 'mid_chat' | 'stopped_searching';
+
 const CONNECTED_MESSAGE = "Connected with anonymous partner. Say Hi!";
 const DISCONNECTED_MESSAGE = 'You were disconnected from the chat.';
 
@@ -249,7 +254,7 @@ export function useChatController(
   chatSocketService: ChatSocketService,
   selection: TopicsSelection,
   tokenProvider: TokenProvider,
-  onLeave: () => void,
+  onLeave: (reason: ChatLeaveReason) => void,
   onReauthRequired: () => void,
   reportService: ReportService,
   backHandlerEnabled = true,
@@ -264,6 +269,7 @@ export function useChatController(
   const [replyingTo, setReplyingTo] = useState<ReplyPreview | null>(null);
   const [rematchState, setRematchState] = useState<RematchState>('idle');
   const [rematchReason, setRematchReason] = useState<RematchReason | null>(null);
+  const [selfSkipCount, setSelfSkipCount] = useState(0);
   const [skipUnavailableMessage, setSkipUnavailableMessage] = useState<string | null>(null);
   const [rematchStatusMessage, setRematchStatusMessage] = useState<string | null>(null);
   const [rematchGaveUp, setRematchGaveUp] = useState(false);
@@ -496,6 +502,9 @@ export function useChatController(
         // queued follows on its own. Don't join_chat here: it would only
         // spend the join_chat rate limit.
         setRematchReason(event.by === 'self' ? 'you_skipped' : 'partner_skipped');
+        if (event.by === 'self') {
+          setSelfSkipCount(count => count + 1);
+        }
         setRematchState('rematching');
         return;
       }
@@ -687,7 +696,7 @@ export function useChatController(
     leavingRef.current = true;
     abortRejoin();
     serviceRef.current.disconnect();
-    onLeave();
+    onLeave('stopped_searching');
   }, [abortRejoin, onLeave]);
 
   const handleRequestLeave = useCallback(() => {
@@ -704,7 +713,7 @@ export function useChatController(
     abortRejoin();
     serviceRef.current.sendEndChat();
     serviceRef.current.disconnect();
-    onLeave();
+    onLeave('mid_chat');
   }, [abortRejoin, onLeave]);
 
   const handleOpenReport = useCallback(() => {
@@ -828,6 +837,7 @@ export function useChatController(
     handleCancelReply,
     rematchState,
     rematchReason,
+    selfSkipCount,
     skipUnavailableMessage,
     handleSkip,
     handleStopSearching,

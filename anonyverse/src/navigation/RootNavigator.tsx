@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text } from 'react-native';
+import { Animated, BackHandler, Pressable, StyleSheet, Text } from 'react-native';
 import {
   createNavigationContainerRef,
   NavigationContainer,
@@ -14,11 +14,12 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { PostHogProvider } from 'posthog-react-native';
 import { useCrossfade } from '../hooks/useCrossfade';
 import { ChatScreen } from '../screens/chat/ChatScreen';
+import type { ChatLeaveReason } from '../screens/chat/useChatController';
 import { FindingNewMatchModal } from '../screens/chat/FindingNewMatchModal';
 import { ChatListScreen } from '../screens/chatList/ChatListScreen';
 import { DevMenuScreen, type DevMenuEntry } from '../screens/devMenu/DevMenuScreen';
 import { EntryScreen } from '../screens/entry/EntryScreen';
-import { FeedbackScreen } from '../screens/feedback/FeedbackScreen';
+import { FeedbackSheet } from '../screens/feedback/FeedbackSheet';
 import type { EntryDestination } from '../screens/entry/useEntryController';
 import { FindingMatchScreen } from '../screens/findingMatch/FindingMatchScreen';
 import { MoodSelectScreen, type Mood } from '../screens/moodSelect/MoodSelectScreen';
@@ -29,6 +30,12 @@ import { useAnalyticsCapture } from '../hooks/usePosthogHooks';
 import type { ChatSocketService } from '../services/chatSocket/ChatSocketService';
 import { createDevNoopChatSocketService } from '../services/chatSocket/devNoopChatSocketService';
 import { devNoopReportService } from '../services/report/devNoopReportService';
+import {
+  claimChatListPrompt,
+  claimFirstSkipPrompt,
+  markExitPromptShown,
+  recordFeedbackSheetClosed,
+} from '../services/feedbackPrompt/feedbackPrompts';
 import { secureFeedbackPromptStore } from '../services/feedbackPrompt/secureFeedbackPromptStore';
 import type { RootStackParamList } from './types';
 
@@ -40,6 +47,9 @@ interface ChatHandoff {
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
+
+// Longer than the stack's slide-in, so the fallback only fires when there was none.
+const PROMPT_TRANSITION_FALLBACK_MS = 700;
 
 /**
  * The refresh token was revoked or expired mid-flow: only Entry's
@@ -60,6 +70,58 @@ function useOpenFeedbackFromChat() {
 
   return useCallback(() => {
     navigation.navigate('Feedback', { screen: 'ChatScreen' });
+  }, [navigation]);
+}
+
+// Topics renders in place, so without this Android back pops the whole route.
+function useBackFromTopicsToMood(onTopics: boolean, backToMood: () => void) {
+  useEffect(() => {
+    if (!onTopics) {
+      return;
+    }
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      backToMood();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [onTopics, backToMood]);
+}
+
+/**
+ * Leaving a live chat opens the feedback sheet over the ended chat, then
+ * lands on ChatList. Stopping the search after the partner left goes
+ * straight to ChatList with no form.
+ */
+function useLeaveChat(clearChat: () => void) {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  return useCallback(
+    (reason: ChatLeaveReason) => {
+      if (reason === 'mid_chat') {
+        markExitPromptShown(secureFeedbackPromptStore);
+        navigation.navigate('Feedback', { screen: 'ChatScreen', trigger: 'CHAT_EXIT', exitTo: 'ChatList' });
+        return;
+      }
+      clearChat();
+      // Returning users already have ChatList underneath; replacing would stack a second one.
+      navigation.popTo('ChatList');
+    },
+    [navigation, clearChat],
+  );
+}
+
+/** The first time a user skips someone, ask for feedback over the rematch search. */
+function useFirstSkipFeedback() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
+  return useCallback(() => {
+    (async () => {
+      if (await claimFirstSkipPrompt(secureFeedbackPromptStore)) {
+        navigation.navigate('Feedback', { screen: 'ChatScreen', trigger: 'CHAT_EXIT' });
+      }
+    })();
   }, [navigation]);
 }
 
@@ -92,8 +154,6 @@ function EntryRoute() {
 type OnboardingStep = 'verification' | 'mood_select' | 'topics' | 'finding_match' | 'chat';
 
 function VerificationRoute() {
-  const navigation =
-    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [step, setStep] = useState<OnboardingStep>('verification');
   const [mood, setMood] = useState<Mood | null>(null);
   const [selection, setSelection] = useState<TopicsSelection | null>(null);
@@ -116,6 +176,13 @@ function VerificationRoute() {
     setStep('topics');
   }, [captureAnalytics]);
 
+  const handleBackToMood = useCallback(() => {
+    // handleSelectMood ignores repeat picks.
+    moodSelectedRef.current = false;
+    setStep('mood_select');
+  }, []);
+  useBackFromTopicsToMood(step === 'topics', handleBackToMood);
+
   const handleFindSomeone = useCallback((topicsSelection: TopicsSelection) => {
     captureAnalytics('topic_selected', { topics: topicsSelection.tags });
     setSelection(topicsSelection);
@@ -131,10 +198,9 @@ function VerificationRoute() {
     setStep('chat');
   }, []);
 
-  const handleLeaveChat = useCallback(() => {
-    setChatHandoff(null);
-    navigation.replace('ChatList', { promptFeedback: true });
-  }, [navigation]);
+  const clearChat = useCallback(() => setChatHandoff(null), []);
+  const handleLeaveChat = useLeaveChat(clearChat);
+  const handleSkipped = useFirstSkipFeedback();
 
   const isFocused = useIsFocused();
   const handleOpenSettings = useOpenFeedbackFromChat();
@@ -159,6 +225,7 @@ function VerificationRoute() {
           onLeave={handleLeaveChat}
           onReauthRequired={handleReauthRequired}
           onOpenSettings={handleOpenSettings}
+          onSkipped={handleSkipped}
           isFocused={isFocused}
         />
       ) : displayStep === 'finding_match' && selection ? (
@@ -169,7 +236,7 @@ function VerificationRoute() {
           onReauthRequired={handleReauthRequired}
         />
       ) : displayStep === 'topics' && mood ? (
-        <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} />
+        <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} onBack={handleBackToMood} />
       ) : displayStep === 'mood_select' ? (
         <MoodSelectScreen showProgress onSelectMood={handleSelectMood} />
       ) : (
@@ -189,16 +256,31 @@ function ChatListRoute({ route }: NativeStackScreenProps<RootStackParamList, 'Ch
     if (!promptFeedback || promptHandledRef.current) {
       return;
     }
-    promptHandledRef.current = true;
-    navigation.setParams({ promptFeedback: undefined });
-
-    (async () => {
-      if (await secureFeedbackPromptStore.hasShownFirstChatPrompt()) {
+    const prompt = () => {
+      if (promptHandledRef.current) {
         return;
       }
-      await secureFeedbackPromptStore.markFirstChatPromptShown();
-      navigation.navigate('Feedback', { screen: 'FirstChatEnded' });
-    })();
+      promptHandledRef.current = true;
+      navigation.setParams({ promptFeedback: undefined });
+      (async () => {
+        if (await claimChatListPrompt(secureFeedbackPromptStore)) {
+          navigation.navigate('Feedback', { screen: 'ChatListScreen', trigger: 'CHAT_LIST_PROMPT' });
+        }
+      })();
+    };
+    // Presenting the overlay while ChatList is still sliding in can leave the
+    // screen dimmed on Android, so wait for the transition. If ChatList was
+    // already showing there is no transition, hence the fallback timer.
+    const unsubscribe = navigation.addListener('transitionEnd', event => {
+      if (!event.data.closing) {
+        prompt();
+      }
+    });
+    const fallback = setTimeout(prompt, PROMPT_TRANSITION_FALLBACK_MS);
+    return () => {
+      unsubscribe();
+      clearTimeout(fallback);
+    };
   }, [navigation, promptFeedback]);
 
   const handleStartChat = useCallback(() => {
@@ -219,14 +301,22 @@ function FeedbackRoute({ route }: NativeStackScreenProps<RootStackParamList, 'Fe
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
-  return <FeedbackScreen defaults={route.params} onClose={() => navigation.goBack()} />;
+  const params = route.params;
+  const handleClose = (submitted: boolean) => {
+    recordFeedbackSheetClosed(secureFeedbackPromptStore, params?.trigger, submitted);
+    if (params?.exitTo === 'ChatList') {
+      navigation.reset({ index: 0, routes: [{ name: 'ChatList' }] });
+      return;
+    }
+    navigation.goBack();
+  };
+
+  return <FeedbackSheet defaults={params} onClose={handleClose} />;
 }
 
 type ReturningStep = 'mood_select' | 'topics' | 'finding_match' | 'chat';
 
 function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, 'MoodSelect'>) {
-  const navigation =
-    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const [step, setStep] = useState<ReturningStep>('mood_select');
   const [mood, setMood] = useState<Mood | null>(null);
   const [selection, setSelection] = useState<TopicsSelection | null>(null);
@@ -246,6 +336,13 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
     setStep('topics');
   }, [captureAnalytics, showProgress]);
 
+  const handleBackToMood = useCallback(() => {
+    // handleSelectMood ignores repeat picks.
+    moodSelectedRef.current = false;
+    setStep('mood_select');
+  }, []);
+  useBackFromTopicsToMood(step === 'topics', handleBackToMood);
+
   const handleFindSomeone = useCallback((topicsSelection: TopicsSelection) => {
     captureAnalytics('topic_selected', { topics: topicsSelection.tags });
     setSelection(topicsSelection);
@@ -261,10 +358,9 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
     setStep('chat');
   }, []);
 
-  const handleLeaveChat = useCallback(() => {
-    setChatHandoff(null);
-    navigation.replace('ChatList');
-  }, [navigation]);
+  const clearChat = useCallback(() => setChatHandoff(null), []);
+  const handleLeaveChat = useLeaveChat(clearChat);
+  const handleSkipped = useFirstSkipFeedback();
 
   const isFocused = useIsFocused();
   const handleOpenSettings = useOpenFeedbackFromChat();
@@ -285,6 +381,7 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
           onLeave={handleLeaveChat}
           onReauthRequired={handleReauthRequired}
           onOpenSettings={handleOpenSettings}
+          onSkipped={handleSkipped}
           isFocused={isFocused}
         />
       ) : displayStep === 'finding_match' && selection ? (
@@ -295,7 +392,7 @@ function MoodSelectRoute({ route }: NativeStackScreenProps<RootStackParamList, '
           onReauthRequired={handleReauthRequired}
         />
       ) : displayStep === 'topics' && mood ? (
-        <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} />
+        <TopicsScreen mood={mood} onFindSomeone={handleFindSomeone} onBack={handleBackToMood} />
       ) : (
         <MoodSelectScreen showProgress={route.params.showProgress} onSelectMood={handleSelectMood} />
       )}
@@ -430,6 +527,23 @@ function DevMenuRoute() {
       description: "In-app feedback form — submitting needs a token, so verify this session first.",
       onPress: () => navigation.navigate('Feedback', { screen: 'DevMenu' }),
     },
+    {
+      label: 'Feedback — leaving a chat',
+      description: 'The form shown when leaving a live chat (closes back here).',
+      onPress: () => navigation.navigate('Feedback', { screen: 'ChatScreen', trigger: 'CHAT_EXIT' }),
+    },
+    {
+      label: 'Chat List after a chat',
+      description: 'Lands on Chat List as after a chat ends; prompts only if the rules allow it.',
+      onPress: () => navigation.navigate('ChatList', { promptFeedback: true }),
+    },
+    {
+      label: 'Reset feedback prompts',
+      description: 'Forget when feedback was last shown, dismissed or sent.',
+      onPress: () => {
+        secureFeedbackPromptStore.reset();
+      },
+    },
   ];
 
   return <DevMenuScreen entries={entries} onClose={() => navigation.goBack()} />;
@@ -481,7 +595,11 @@ export function RootNavigator() {
         component={MoodSelectRoute}
         options={{ animation: 'fade' }}
       />
-      <Stack.Screen name="Feedback" component={FeedbackRoute} />
+      <Stack.Screen
+        name="Feedback"
+        component={FeedbackRoute}
+        options={{ presentation: 'transparentModal', animation: 'none' }}
+      />
       {__DEV__ ? (
         <>
           <Stack.Screen name="DevMenu" component={DevMenuRoute} options={{ animation: 'fade' }} />

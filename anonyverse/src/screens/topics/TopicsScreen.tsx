@@ -18,6 +18,8 @@ export interface TopicsSelection {
 export interface TopicsScreenProps {
   mood: Mood;
   onFindSomeone: (selection: TopicsSelection) => void;
+  /** Shows an on-screen back button (iOS has no hardware back). */
+  onBack?: () => void;
 }
 
 interface Topic {
@@ -115,7 +117,7 @@ const MOOD_CONTENT: Record<
  * Finding a Connection, which feeds it to join_chat(tags, mood, optedIn)
  * per docs/api.md.
  */
-export function TopicsScreen({ mood, onFindSomeone }: TopicsScreenProps) {
+export function TopicsScreen({ mood, onFindSomeone, onBack }: TopicsScreenProps) {
   const content = MOOD_CONTENT[mood];
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [optedIn, setOptedIn] = useState(true);
@@ -188,7 +190,18 @@ export function TopicsScreen({ mood, onFindSomeone }: TopicsScreenProps) {
       <BackgroundGradient />
 
       <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
-        <View style={styles.content}>
+        <View style={[styles.content, onBack && styles.contentWithBack]}>
+          {onBack ? (
+            <Pressable
+              onPress={onBack}
+              accessibilityRole="button"
+              accessibilityLabel="Back to mood"
+              hitSlop={6}
+              style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
+            >
+              <Text style={styles.backGlyph}>{'←'}</Text>
+            </Pressable>
+          ) : null}
           <View style={styles.header}>
             <Text style={[typography.headline, styles.headline]}>
               {content.headlineLead}
@@ -322,6 +335,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.screenHorizontal,
     paddingTop: 26,
     paddingBottom: 24,
+  },
+  contentWithBack: {
+    paddingTop: 8,
+  },
+  backButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    marginBottom: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.overlayBackground,
+    shadowColor: colors.cardShadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 1,
+    shadowRadius: 12,
+    elevation: 3,
+  },
+  backButtonPressed: {
+    opacity: 0.85,
+  },
+  backGlyph: {
+    fontFamily: fontFamily.semiBold,
+    fontSize: 19,
+    color: colors.ink,
   },
   header: {
     flexDirection: 'row',
