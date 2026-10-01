@@ -1,0 +1,82 @@
+name: Android → Firebase
+
+on:
+  workflow_dispatch:
+    inputs:
+      groups:
+        description: Firebase tester group aliases (comma-separated)
+        required: true
+        default: internal
+      release_notes:
+        description: Release notes (leave empty to use the last 10 commits)
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+# Each run picks versionCode = latest Firebase build + 1, so runs must not overlap
+concurrency:
+  group: android-firebase
+  cancel-in-progress: false
+
+jobs:
+  distribute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: anonyverse
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 20 # changelog_from_git_commits reads recent history
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: anonyverse/package-lock.json
+
+      - run: npm ci
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+          bundler-cache: true
+          working-directory: anonyverse
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Write signing key, Firebase credentials and app .env
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          APP_ENV_FILE: ${{ secrets.APP_ENV_FILE }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT_JSON" > "$RUNNER_TEMP/firebase-sa.json"
+          printf '%s\n' "$APP_ENV_FILE" > .env
+
+      - name: Build and distribute
+        env:
+          # Gradle reads ORG_GRADLE_PROJECT_* as project properties (see android/app/build.gradle)
+          ORG_GRADLE_PROJECT_ANONYVERSE_UPLOAD_STORE_FILE: ${{ runner.temp }}/release.keystore
+          ORG_GRADLE_PROJECT_ANONYVERSE_UPLOAD_KEY_ALIAS: ${{ vars.ANDROID_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_ANONYVERSE_UPLOAD_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_ANONYVERSE_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          FIREBASE_ANDROID_APP_ID: ${{ vars.FIREBASE_ANDROID_APP_ID }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ runner.temp }}/firebase-sa.json
+          FIREBASE_GROUPS: ${{ inputs.groups }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: bundle exec fastlane android firebase
+
+      - name: Remove signing key and credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore" "$RUNNER_TEMP/firebase-sa.json" .env

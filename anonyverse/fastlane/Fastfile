@@ -1,0 +1,40 @@
+default_platform(:android)
+skip_docs
+
+platform :android do
+  desc "Build a signed release APK and send it to Firebase App Distribution"
+  lane :firebase do
+    # Locally these come from fastlane/.env, on CI from the workflow env.
+    # Checked up front so a missing secret fails before the long build.
+    ensure_env_vars(env_vars: ["FIREBASE_ANDROID_APP_ID", "FIREBASE_SERVICE_ACCOUNT", "FIREBASE_GROUPS"])
+
+    app   = ENV["FIREBASE_ANDROID_APP_ID"]
+    creds = ENV["FIREBASE_SERVICE_ACCOUNT"]
+
+    latest = firebase_app_distribution_get_latest_release(app: app, service_credentials_file: creds)
+    build  = (latest ? latest[:buildVersion].to_i : 0) + 1
+
+    gradle(
+      project_dir: "android",
+      task: "assembleRelease",
+      properties: {
+        "versionCode" => build,
+        "reactNativeArchitectures" => "arm64-v8a"
+      }
+    )
+
+    notes = ENV["RELEASE_NOTES"].to_s.strip
+    if notes.empty?
+      notes = changelog_from_git_commits(commits_count: 10, pretty: "- %s",
+                                         merge_commit_filtering: "exclude_merges")
+    end
+
+    firebase_app_distribution(
+      app: app,
+      android_artifact_type: "APK",
+      groups: ENV["FIREBASE_GROUPS"],
+      release_notes: notes,
+      service_credentials_file: creds
+    )
+  end
+end
