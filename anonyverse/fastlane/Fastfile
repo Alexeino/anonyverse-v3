@@ -26,8 +26,9 @@ platform :android do
     notes = ENV["RELEASE_NOTES"].to_s.strip
     if notes.empty?
       notes = changelog_from_git_commits(commits_count: 10, pretty: "- %s",
-                                         merge_commit_filtering: "exclude_merges")
+                                         merge_commit_filtering: "exclude_merges").to_s.strip
     end
+    notes = "Build #{build}" if notes.empty?
 
     firebase_app_distribution(
       app: app,

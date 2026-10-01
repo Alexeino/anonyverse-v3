@@ -79,6 +79,7 @@ android {
 
     namespace "com.anonyverse"
     defaultConfig {
+        // Differs from namespace on purpose: must match the Firebase app and the iOS bundle ID
         applicationId "com.alexeino.anonyverse"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
@@ -109,6 +110,16 @@ android {
             signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+}
+
+// Release builds must be signed with the upload key — fail early instead of emitting an unsigned APK
+def hasReleaseSigning = project.hasProperty("ANONYVERSE_UPLOAD_STORE_FILE")
+tasks.matching { it.name == "preReleaseBuild" }.configureEach {
+    doFirst {
+        if (!hasReleaseSigning) {
+            throw new GradleException("Release signing is not configured: set ANONYVERSE_UPLOAD_* in ~/.gradle/gradle.properties (local) or ORG_GRADLE_PROJECT_ANONYVERSE_UPLOAD_* env vars (CI).")
         }
     }
 }
