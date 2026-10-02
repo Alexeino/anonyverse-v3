@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Animated, BackHandler, Pressable, StyleSheet, Text } from 'react-native';
+import { Animated, BackHandler, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   createNavigationContainerRef,
   NavigationContainer,
@@ -13,6 +13,11 @@ import type {
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { PostHogProvider } from 'posthog-react-native';
 import { useCrossfade } from '../hooks/useCrossfade';
+import { BackgroundGradient } from '../components/BackgroundGradient/BackgroundGradient';
+import { colors } from '../design/tokens';
+import { DobModal } from '../screens/ageGate/DobModal';
+import { UnderageModal } from '../screens/ageGate/UnderageModal';
+import { isAdult, toCalendarDate } from '../services/ageGate/ageRules';
 import { ChatScreen } from '../screens/chat/ChatScreen';
 import type { ChatLeaveReason } from '../screens/chat/useChatController';
 import { FindingNewMatchModal } from '../screens/chat/FindingNewMatchModal';
@@ -37,6 +42,7 @@ import {
   recordFeedbackSheetClosed,
 } from '../services/feedbackPrompt/feedbackPrompts';
 import { secureFeedbackPromptStore } from '../services/feedbackPrompt/secureFeedbackPromptStore';
+import { secureAgeLockStore } from '../services/ageGate/secureAgeLockStore';
 import type { RootStackParamList } from './types';
 
 interface ChatHandoff {
@@ -476,6 +482,66 @@ function DevFindingNewMatchModalRoute() {
   );
 }
 
+// The popups' blur captures what's behind them, so wait until the screen has finished appearing.
+const SCREEN_APPEAR_FALLBACK_MS = 400;
+
+function useAfterScreenAppears() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('transitionEnd', () => setReady(true));
+    const fallback = setTimeout(() => setReady(true), SCREEN_APPEAR_FALLBACK_MS);
+    return () => {
+      unsubscribe();
+      clearTimeout(fallback);
+    };
+  }, [navigation]);
+  return ready;
+}
+
+function DevAgeGateRoute() {
+  const navigation =
+    useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const ready = useAfterScreenAppears();
+
+  return (
+    <View style={devAgeGateStyles.root}>
+      <BackgroundGradient />
+      {ready ? (
+        <DobModal
+          onConfirm={dob => {
+            console.log('[DevAgeGate] Picked date of birth', dob);
+            if (isAdult(dob, toCalendarDate(new Date()))) {
+              navigation.goBack();
+            } else {
+              navigation.replace('DevAgeLock');
+            }
+          }}
+        />
+      ) : null}
+    </View>
+  );
+}
+
+const devAgeGateStyles = StyleSheet.create({
+  root: {
+    flex: 1,
+    backgroundColor: colors.gradientBackground[0],
+  },
+});
+
+function DevAgeLockRoute() {
+  const ready = useAfterScreenAppears();
+
+  return (
+    <View style={devAgeGateStyles.root}>
+      <BackgroundGradient />
+      {ready ? <UnderageModal lockUntil={{ year: 2030, month: 3, day: 12 }} /> : null}
+    </View>
+  );
+}
+
 function DevMenuRoute() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -492,6 +558,18 @@ function DevMenuRoute() {
       onPress: () => navigation.navigate('Verification'),
     },
     {
+      label: 'Age check — date of birth popup',
+      description: '18+ goes back here; under 18 shows the "can\'t use Anonyverse" popup. Nothing is saved.',
+      onPress: () => navigation.navigate('DevAgeGate'),
+    },
+    {
+      label: 'Reset age lock',
+      description: 'Forget an under-18 date of birth entered on this phone.',
+      onPress: () => {
+        secureAgeLockStore.clearLock();
+      },
+    },
+    {
       label: 'Mood Select',
       description: 'Returning-user variant (no progress bar).',
       onPress: () => navigation.navigate('MoodSelect', { showProgress: false }),
@@ -500,11 +578,6 @@ function DevMenuRoute() {
       label: 'Topics — feeling good',
       description: 'Topic picker, "good" mood variant.',
       onPress: () => navigation.navigate('DevTopics', { mood: 'good' }),
-    },
-    {
-      label: 'Topics — feeling low',
-      description: 'Topic picker, "low" mood variant.',
-      onPress: () => navigation.navigate('DevTopics', { mood: 'low' }),
     },
     {
       label: 'Finding Match',
@@ -530,16 +603,6 @@ function DevMenuRoute() {
       label: 'Feedback',
       description: "In-app feedback form — submitting needs a token, so verify this session first.",
       onPress: () => navigation.navigate('Feedback', { screen: 'DevMenu' }),
-    },
-    {
-      label: 'Feedback — leaving a chat',
-      description: 'The form shown when leaving a live chat (closes back here).',
-      onPress: () => navigation.navigate('Feedback', { screen: 'ChatScreen', trigger: 'CHAT_EXIT' }),
-    },
-    {
-      label: 'Chat List after a chat',
-      description: 'Lands on Chat List as after a chat ends; prompts only if the rules allow it.',
-      onPress: () => navigation.navigate('ChatList', { promptFeedback: true }),
     },
     {
       label: 'Reset feedback prompts',
@@ -611,6 +674,8 @@ export function RootNavigator() {
           <Stack.Screen name="DevFindingMatch" component={DevFindingMatchRoute} />
           <Stack.Screen name="DevChat" component={DevChatRoute} />
           <Stack.Screen name="DevFindingNewMatchModal" component={DevFindingNewMatchModalRoute} />
+          <Stack.Screen name="DevAgeGate" component={DevAgeGateRoute} options={{ animation: 'fade' }} />
+          <Stack.Screen name="DevAgeLock" component={DevAgeLockRoute} options={{ animation: 'fade' }} />
         </>
       ) : null}
     </Stack.Navigator>
