@@ -1,12 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { env } from '../../config/env';
+import type { AgeLockStore } from '../../services/ageGate/AgeLockStore';
+import {
+  eighteenthBirthday,
+  isAdult,
+  isLockActive,
+  toCalendarDate,
+  type CalendarDate,
+} from '../../services/ageGate/ageRules';
 import type { AuthService } from '../../services/auth/AuthService';
 import type { DeviceIdentityService } from '../../services/deviceIdentity/DeviceIdentityService';
 import type { SessionStore } from '../../services/session/SessionStore';
 import { useTurnstile, type UseTurnstileResult } from '../../services/turnstile/useTurnstile';
 import { useAnalyticsCapture, useCaptureEvent, useIdentifyDevice } from '../../hooks/usePosthogHooks';
 
-export type VerificationPhase = 'verifying' | 'verified' | 'failed';
+export type VerificationPhase = 'checking_lock' | 'locked' | 'verifying' | 'age_check' | 'verified' | 'failed';
+
+const defaultNow = () => new Date();
 
 /** How long the "Verified" success state is shown before auto-continuing, if the user hasn't already tapped Continue. */
 const AUTO_CONTINUE_DELAY_MS = 1500;
@@ -24,6 +34,11 @@ export interface UseVerificationControllerResult {
   /** Number of failed attempts so far — meaningful while phase is 'failed'. */
   attempts: number;
   turnstile: UseTurnstileResult;
+  /** True while the date-of-birth popup should be shown: Turnstile passed, age not yet confirmed. */
+  needsAgeCheck: boolean;
+  /** When the under-18 lock lifts, while phase is 'locked'. */
+  lockUntil: CalendarDate | null;
+  handleBirthDateConfirmed: (dob: CalendarDate) => void;
   /** Tap handler for the "Continue" CTA on the verified state. */
   handleContinue: () => void;
   /** Tap handler for the "Try again" CTA on the failed (not yet exhausted) state. */
@@ -31,9 +46,11 @@ export interface UseVerificationControllerResult {
 }
 
 /**
- * Owns the Verification screen's state machine: loads the local device
- * ID, runs the Turnstile challenge (see useTurnstile), submits the
- * resulting token to POST /api/v1/captcha/verify, and — once the backend
+ * Owns the Verification screen's state machine: shows the lock screen if
+ * an under-18 date of birth locked this device, otherwise runs the
+ * Turnstile challenge (see useTurnstile), then asks for a date of birth
+ * (an under-18 date locks this device locally; nothing about age is sent),
+ * submits the Turnstile token to POST /api/v1/captcha/verify, and — once the backend
  * confirms AUTHENTICATED — shows the verified state and hands off via
  * `onVerified`, either because the user tapped Continue or after a 1.5s
  * grace period, whichever happens first.
@@ -48,9 +65,14 @@ export function useVerificationController(
   deviceIdentityService: DeviceIdentityService,
   authService: AuthService,
   sessionStore: SessionStore,
+  ageLockStore: AgeLockStore,
   onVerified: () => void,
+  now: () => Date = defaultNow,
 ): UseVerificationControllerResult {
-  const [phase, setPhase] = useState<VerificationPhase>('verifying');
+  const [phase, setPhase] = useState<VerificationPhase>('checking_lock');
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
+  const [lockUntil, setLockUntil] = useState<CalendarDate | null>(null);
+  const ageAnsweredRef = useRef(false);
   const [isContinuing, setIsContinuing] = useState(false);
   const [attempts, setAttempts] = useState(0);
   const verifyingRef = useRef(false);
@@ -73,14 +95,45 @@ export function useVerificationController(
 
   const recordFailure = useCallback((error: any) => {
     setAttempts(current => current + 1);
-    setPhase('failed');
+    // A late Turnstile message must not turn a locked device back into a retryable one.
+    setPhase(current => (current === 'locked' ? current : 'failed'));
     captureAnalytics("verification_failed", {
       reason: error instanceof Error ? error.message : String(error ?? 'unknown')
     })
   }, [captureAnalytics]);
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const savedLock = await ageLockStore.getLockUntil();
+      if (cancelled) {
+        return;
+      }
+      if (savedLock && isLockActive(savedLock, toCalendarDate(now()))) {
+        setLockUntil(savedLock);
+        setPhase('locked');
+        return;
+      }
+      if (savedLock) {
+        await ageLockStore.clearLock();
+      }
+      if (!cancelled) {
+        setPhase('verifying');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [ageLockStore, now]);
+
+  useEffect(() => {
     if (!token || verifyingRef.current) {
+      return;
+    }
+    // The token is held until the age popup is answered; an expired one is
+    // refreshed by the widget and picked up here.
+    if (!ageConfirmed) {
+      setPhase(current => (current === 'verifying' ? 'age_check' : current));
       return;
     }
 
@@ -123,7 +176,7 @@ export function useVerificationController(
     return () => {
       cancelled = true;
     };
-  }, [token, authService, deviceIdentityService, sessionStore, recordFailure, captureAnalytics, identifyDevice]);
+  }, [token, ageConfirmed, authService, deviceIdentityService, sessionStore, recordFailure, captureAnalytics, identifyDevice]);
 
   useEffect(() => {
     if (!turnstileError) {
@@ -153,20 +206,43 @@ export function useVerificationController(
     return () => clearTimeout(timer);
   }, [isContinuing, onVerified]);
 
+  const handleBirthDateConfirmed = useCallback(
+    (dob: CalendarDate) => {
+      if (ageAnsweredRef.current) {
+        return;
+      }
+      ageAnsweredRef.current = true;
+      if (isAdult(dob, toCalendarDate(now()))) {
+        setAgeConfirmed(true);
+        return;
+      }
+      (async () => {
+        const until = eighteenthBirthday(dob);
+        await ageLockStore.setLockUntil(until);
+        setLockUntil(until);
+        setPhase('locked');
+      })();
+    },
+    [ageLockStore, now],
+  );
+
   const handleRetry = useCallback(() => {
-    if (attempts >= MAX_VERIFY_ATTEMPTS) {
+    if (attempts >= MAX_VERIFY_ATTEMPTS || phase === 'locked') {
       return;
     }
     verifyingRef.current = false;
     reset();
     setPhase('verifying');
-  }, [attempts, reset]);
+  }, [attempts, phase, reset]);
 
   return {
     phase,
     isContinuing,
     attempts,
     turnstile,
+    needsAgeCheck: phase === 'age_check' && !ageConfirmed,
+    lockUntil,
+    handleBirthDateConfirmed,
     handleContinue: fireOnVerifiedOnce,
     handleRetry,
   };

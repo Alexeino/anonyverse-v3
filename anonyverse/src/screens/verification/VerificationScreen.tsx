@@ -9,7 +9,10 @@ import { PrimaryButton } from '../../components/PrimaryButton/PrimaryButton';
 import { StatusCard } from '../../components/StatusCard/StatusCard';
 import { colors, fontFamily, spacing, typography } from '../../design/tokens';
 import { useCrossfade } from '../../hooks/useCrossfade';
+import { secureAgeLockStore } from '../../services/ageGate/secureAgeLockStore';
 import { restAuthService } from '../../services/auth/restAuthService';
+import { DobModal } from '../ageGate/DobModal';
+import { UnderageModal } from '../ageGate/UnderageModal';
 import { secureDeviceIdentityService } from '../../services/deviceIdentity/secureDeviceIdentityService';
 import { inMemorySessionStore } from '../../services/session/inMemorySessionStore';
 import { MAX_VERIFY_ATTEMPTS, useVerificationController } from './useVerificationController';
@@ -34,11 +37,12 @@ const RETRY_CHECKLIST = [
 ];
 
 export function VerificationScreen({ onVerified }: VerificationScreenProps) {
-  const { phase, isContinuing, attempts, turnstile, handleContinue, handleRetry } =
+  const { phase, isContinuing, attempts, turnstile, needsAgeCheck, lockUntil, handleBirthDateConfirmed, handleContinue, handleRetry } =
     useVerificationController(
       secureDeviceIdentityService,
       restAuthService,
       inMemorySessionStore,
+      secureAgeLockStore,
       onVerified,
     );
 
@@ -58,7 +62,11 @@ export function VerificationScreen({ onVerified }: VerificationScreenProps) {
   // phases instead of cutting instantly (see useCrossfade). The CTA/
   // progress bar below key off the raw `phase`, not this lagged value —
   // they're meant to change immediately, independent of the crossfade.
-  const { displayValue: displayPhase, opacity: contentOpacity } = useCrossfade(phase);
+  // The age popups sit on top of the "verifying" content, so it shouldn't fade behind them.
+  const contentPhase = phase === 'verified' || phase === 'failed' ? phase : 'verifying';
+  const { displayValue: displayPhase, opacity: contentOpacity } = useCrossfade(contentPhase);
+
+  const turnstileMounted = phase !== 'failed' && phase !== 'checking_lock' && phase !== 'locked';
 
   return (
     <View style={styles.root}>
@@ -212,7 +220,7 @@ export function VerificationScreen({ onVerified }: VerificationScreenProps) {
         </View>
       </SafeAreaView>
 
-      {phase !== 'failed' ? (
+      {turnstileMounted ? (
         <View
           style={StyleSheet.absoluteFill}
           pointerEvents={turnstile.needsInteraction ? 'auto' : 'none'}
@@ -255,6 +263,9 @@ export function VerificationScreen({ onVerified }: VerificationScreenProps) {
           </View>
         </View>
       ) : null}
+
+      {needsAgeCheck ? <DobModal onConfirm={handleBirthDateConfirmed} /> : null}
+      {phase === 'locked' ? <UnderageModal lockUntil={lockUntil} /> : null}
     </View>
   );
 }

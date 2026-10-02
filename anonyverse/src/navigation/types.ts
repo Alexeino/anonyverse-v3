@@ -31,4 +31,6 @@ export type RootStackParamList = {
   /** Undefined when reached directly from the Dev Menu (uses a no-op socket instead). */
   DevChat: { service: ChatSocketService; partner: string; mood: Mood; topic: string | null } | undefined;
   DevFindingNewMatchModal: undefined;
+  DevAgeGate: undefined;
+  DevAgeLock: undefined;
 };
