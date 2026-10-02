@@ -10,7 +10,9 @@ import { StatusCard } from '../../components/StatusCard/StatusCard';
 import { colors, fontFamily, spacing, typography } from '../../design/tokens';
 import { useCrossfade } from '../../hooks/useCrossfade';
 import { secureAgeLockStore } from '../../services/ageGate/secureAgeLockStore';
+import { nativeAgeSignalService } from '../../services/ageSignals/nativeAgeSignalService';
 import { restAuthService } from '../../services/auth/restAuthService';
+import { AgeSharingExplainerModal } from '../ageGate/AgeSharingExplainerModal';
 import { DobModal } from '../ageGate/DobModal';
 import { UnderageModal } from '../ageGate/UnderageModal';
 import { secureDeviceIdentityService } from '../../services/deviceIdentity/secureDeviceIdentityService';
@@ -37,12 +39,13 @@ const RETRY_CHECKLIST = [
 ];
 
 export function VerificationScreen({ onVerified }: VerificationScreenProps) {
-  const { phase, isContinuing, attempts, turnstile, needsAgeCheck, lockUntil, handleBirthDateConfirmed, handleContinue, handleRetry } =
+  const { phase, isContinuing, attempts, turnstile, needsAgeCheck, needsAgeSharingExplainer, lockUntil, handleAgeSharingContinue, handleBirthDateConfirmed, handleContinue, handleRetry } =
     useVerificationController(
       secureDeviceIdentityService,
       restAuthService,
       inMemorySessionStore,
       secureAgeLockStore,
+      nativeAgeSignalService,
       onVerified,
     );
 
@@ -264,6 +267,7 @@ export function VerificationScreen({ onVerified }: VerificationScreenProps) {
         </View>
       ) : null}
 
+      {needsAgeSharingExplainer ? <AgeSharingExplainerModal onContinue={handleAgeSharingContinue} /> : null}
       {needsAgeCheck ? <DobModal onConfirm={handleBirthDateConfirmed} /> : null}
       {phase === 'locked' ? <UnderageModal lockUntil={lockUntil} /> : null}
     </View>

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Animated, BackHandler, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, BackHandler, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   createNavigationContainerRef,
   NavigationContainer,
@@ -542,6 +542,26 @@ function DevAgeLockRoute() {
   );
 }
 
+type FakePhoneAge = 'adult' | 'minor' | 'none';
+
+// Debug Android builds only: makes the next Play age check return this instead of asking Play.
+function fakeNextPhoneAge(age: FakePhoneAge) {
+  const testing = require('react-native-age-signals/testing');
+  testing.clearFake();
+  if (age === 'none') {
+    testing.setFakeAccessStatus(testing.AgeSignalsStatus.NOT_SHARED);
+    return;
+  }
+  testing.setFakeAccessStatus(testing.AgeSignalsStatus.SHARED);
+  testing.setFakeResult(age === 'adult' ? { ageLower: 18 } : { ageLower: 13, ageUpper: 17 });
+}
+
+const FAKE_PHONE_AGE_ENTRIES: { age: FakePhoneAge; label: string }[] = [
+  { age: 'adult', label: '18+' },
+  { age: 'minor', label: 'under 18' },
+  { age: 'none', label: 'no answer' },
+];
+
 function DevMenuRoute() {
   const navigation =
     useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -612,6 +632,18 @@ function DevMenuRoute() {
       },
     },
   ];
+
+  if (Platform.OS === 'android') {
+    entries.splice(
+      entries.findIndex(entry => entry.label === 'Reset age lock') + 1,
+      0,
+      ...FAKE_PHONE_AGE_ENTRIES.map(({ age, label }) => ({
+        label: `Phone age next time: ${label}`,
+        description: 'Fakes the next Google Play age check, then go through Verification.',
+        onPress: () => fakeNextPhoneAge(age),
+      })),
+    );
+  }
 
   return <DevMenuScreen entries={entries} onClose={() => navigation.goBack()} />;
 }
