@@ -1,4 +1,5 @@
 import {
+  addYears,
   compareDates,
   eighteenthBirthday,
   isAdult,
@@ -30,6 +31,20 @@ describe('isAdult', () => {
   it('treats someone born on 29 Feb as 18 on 1 Mar in a non-leap year', () => {
     expect(isAdult(date(2008, 2, 29), date(2026, 2, 28))).toBe(false);
     expect(isAdult(date(2008, 2, 29), date(2026, 3, 1))).toBe(true);
+  });
+});
+
+describe('addYears', () => {
+  it('adds whole years', () => {
+    expect(addYears(date(2026, 10, 1), 1)).toEqual(date(2027, 10, 1));
+  });
+
+  it('moves 29 Feb to 1 Mar in a non-leap year', () => {
+    expect(addYears(date(2028, 2, 29), 1)).toEqual(date(2029, 3, 1));
+  });
+
+  it('keeps 29 Feb in a leap year', () => {
+    expect(addYears(date(2024, 2, 29), 4)).toEqual(date(2028, 2, 29));
   });
 });
 

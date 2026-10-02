@@ -19,3 +19,16 @@ buildscript {
 }
 
 apply plugin: "com.facebook.react.rootproject"
+
+// react-native-age-signals hardcodes compileSdk 36 and sets no NDK, so it builds
+// against a newer libc++ than the app ships and crashes on launch. Match the app.
+subprojects { project ->
+    if (project.name == "react-native-age-signals") {
+        project.plugins.withId("com.android.library") {
+            project.androidComponents.finalizeDsl { android ->
+                android.compileSdk = rootProject.ext.compileSdkVersion
+                android.ndkVersion = rootProject.ext.ndkVersion
+            }
+        }
+    }
+}

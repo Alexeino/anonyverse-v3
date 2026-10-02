@@ -3,6 +3,7 @@ import ReactTestRenderer, { act } from 'react-test-renderer';
 import { usePostHog } from 'posthog-react-native';
 import type { AgeLockStore } from '../../../services/ageGate/AgeLockStore';
 import type { CalendarDate } from '../../../services/ageGate/ageRules';
+import type { AgeSignalService, OsAgeAnswer } from '../../../services/ageSignals/AgeSignalService';
 import type { AuthService } from '../../../services/auth/AuthService';
 import type { VerifyOutcome } from '../../../services/auth/types';
 import type { DeviceIdentityService } from '../../../services/deviceIdentity/DeviceIdentityService';
@@ -55,6 +56,13 @@ function makeAgeLockStore(lockUntil: CalendarDate | null = null): AgeLockStore {
   };
 }
 
+function makeAgeSignalService(answer: OsAgeAnswer = 'unknown', showsSheet = false): AgeSignalService {
+  return {
+    showsSystemSheet: jest.fn(() => Promise.resolve(showsSheet)),
+    check: jest.fn(() => Promise.resolve(answer)),
+  };
+}
+
 function extractNonce(html: string): string {
   const match = html.match(/NONCE = "([^"]+)"/);
   if (!match) {
@@ -94,6 +102,7 @@ function Harness({
   authService,
   sessionStore,
   ageLockStore,
+  ageSignalService,
   onVerified,
   onReady,
 }: {
@@ -101,6 +110,7 @@ function Harness({
   authService: AuthService;
   sessionStore: SessionStore;
   ageLockStore: AgeLockStore;
+  ageSignalService: AgeSignalService;
   onVerified: () => void;
   onReady: (result: ReturnType<typeof useVerificationController>) => void;
 }) {
@@ -109,6 +119,7 @@ function Harness({
     authService,
     sessionStore,
     ageLockStore,
+    ageSignalService,
     onVerified,
     NOW,
   );
@@ -120,6 +131,7 @@ interface RenderedController {
   onVerified: jest.Mock;
   sessionStore: SessionStore;
   ageLockStore: AgeLockStore;
+  ageSignalService: AgeSignalService;
   /** Property access (not destructuring!) re-reads the latest hook result on every access. */
   readonly latest: ReturnType<typeof useVerificationController>;
 }
@@ -130,7 +142,8 @@ async function render(
   {
     sessionStore = makeSessionStore(),
     ageLockStore = makeAgeLockStore(),
-  }: { sessionStore?: SessionStore; ageLockStore?: AgeLockStore } = {},
+    ageSignalService = makeAgeSignalService(),
+  }: { sessionStore?: SessionStore; ageLockStore?: AgeLockStore; ageSignalService?: AgeSignalService } = {},
 ): Promise<RenderedController> {
   const onVerified = jest.fn();
   let latest: ReturnType<typeof useVerificationController> | undefined;
@@ -142,6 +155,7 @@ async function render(
         authService={authService}
         sessionStore={sessionStore}
         ageLockStore={ageLockStore}
+        ageSignalService={ageSignalService}
         onVerified={onVerified}
         onReady={result => {
           latest = result;
@@ -155,6 +169,7 @@ async function render(
     onVerified,
     sessionStore,
     ageLockStore,
+    ageSignalService,
     get latest() {
       return latest!;
     },
@@ -485,6 +500,95 @@ describe('useVerificationController', () => {
       await flushMicrotasks();
     });
     expect(harness.latest.phase).toBe('verifying');
+  });
+
+  it('lets the user straight in when the phone says 18+, without the date-of-birth popup', async () => {
+    const authService = makeAuthService(() =>
+      Promise.resolve({ status: 'authenticated', deviceId: 'new-device-id', token: AUTH_TOKEN }),
+    );
+    const harness = await render(makeDeviceIdentityService(null), authService, {
+      ageSignalService: makeAgeSignalService('adult'),
+    });
+
+    await passTurnstile(harness, 'challenge-token');
+
+    expect(harness.latest.needsAgeCheck).toBe(false);
+    expect(authService.verify).toHaveBeenCalledWith(null, 'challenge-token');
+    expect(harness.latest.phase).toBe('verified');
+  });
+
+  it('locks the device for a year when the phone says under 18', async () => {
+    const authService = makeAuthService(() => Promise.resolve({ status: 'failed' }));
+    const harness = await render(makeDeviceIdentityService(null), authService, {
+      ageSignalService: makeAgeSignalService('minor'),
+    });
+
+    await passTurnstile(harness, 'challenge-token');
+
+    expect(harness.latest.phase).toBe('locked');
+    expect(harness.latest.lockUntil).toEqual({ year: 2027, month: 10, day: 1 });
+    expect(harness.ageLockStore.setLockUntil).toHaveBeenCalledWith({ year: 2027, month: 10, day: 1 });
+    expect(harness.latest.needsAgeCheck).toBe(false);
+    expect(authService.verify).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the date-of-birth popup when the phone has no answer', async () => {
+    const authService = makeAuthService(() => Promise.resolve({ status: 'failed' }));
+    const ageSignalService = makeAgeSignalService('unknown');
+    const harness = await render(makeDeviceIdentityService(null), authService, { ageSignalService });
+
+    await passTurnstile(harness, 'challenge-token');
+
+    expect(ageSignalService.check).toHaveBeenCalledTimes(1);
+    expect(harness.latest.needsAgeCheck).toBe(true);
+  });
+
+  it('falls back to the date-of-birth popup when the phone check fails', async () => {
+    const authService = makeAuthService(() => Promise.resolve({ status: 'failed' }));
+    const ageSignalService = makeAgeSignalService();
+    (ageSignalService.check as jest.Mock).mockImplementation(() => Promise.reject(new Error('boom')));
+    const harness = await render(makeDeviceIdentityService(null), authService, { ageSignalService });
+
+    await passTurnstile(harness, 'challenge-token');
+
+    expect(harness.latest.needsAgeCheck).toBe(true);
+  });
+
+  it("explains Apple's sheet first and only asks the phone after Continue", async () => {
+    const authService = makeAuthService(() => Promise.resolve({ status: 'failed' }));
+    const ageSignalService = makeAgeSignalService('unknown', true);
+    const harness = await render(makeDeviceIdentityService(null), authService, { ageSignalService });
+
+    await passTurnstile(harness, 'challenge-token');
+
+    expect(harness.latest.needsAgeSharingExplainer).toBe(true);
+    expect(harness.latest.needsAgeCheck).toBe(false);
+    expect(ageSignalService.check).not.toHaveBeenCalled();
+
+    await act(async () => {
+      harness.latest.handleAgeSharingContinue();
+      await flushMicrotasks();
+    });
+
+    expect(ageSignalService.check).toHaveBeenCalledTimes(1);
+    expect(harness.latest.needsAgeSharingExplainer).toBe(false);
+    expect(harness.latest.needsAgeCheck).toBe(true);
+  });
+
+  it('asks the phone only once, even across a retry', async () => {
+    const authService = makeAuthService(() => Promise.resolve({ status: 'failed' }));
+    const ageSignalService = makeAgeSignalService('adult');
+    const harness = await render(makeDeviceIdentityService(null), authService, { ageSignalService });
+
+    await passTurnstile(harness, 'challenge-token');
+    expect(harness.latest.phase).toBe('failed');
+    act(() => {
+      harness.latest.handleRetry();
+    });
+    await passTurnstile(harness, 'retry-token');
+
+    expect(ageSignalService.check).toHaveBeenCalledTimes(1);
+    expect(authService.verify).toHaveBeenLastCalledWith(null, 'retry-token');
   });
 
   it('handleContinue only fires onVerified once even if called twice', async () => {

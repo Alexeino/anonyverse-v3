@@ -40,13 +40,17 @@ export function isValidBirthDate(dob: CalendarDate, today: CalendarDate): boolea
   return compareDates(dob, today) <= 0;
 }
 
-// 18 years after a leap year is never a leap year, so 29 Feb becomes 1 Mar.
-export function eighteenthBirthday(dob: CalendarDate): CalendarDate {
-  const year = dob.year + MIN_AGE;
-  if (dob.month === 2 && dob.day === 29 && !isLeapYear(year)) {
+// 29 Feb becomes 1 Mar when the target year isn't a leap year.
+export function addYears(date: CalendarDate, years: number): CalendarDate {
+  const year = date.year + years;
+  if (date.month === 2 && date.day === 29 && !isLeapYear(year)) {
     return { year, month: 3, day: 1 };
   }
-  return { year, month: dob.month, day: dob.day };
+  return { year, month: date.month, day: date.day };
+}
+
+export function eighteenthBirthday(dob: CalendarDate): CalendarDate {
+  return addYears(dob, MIN_AGE);
 }
 
 export function isAdult(dob: CalendarDate, today: CalendarDate): boolean {
