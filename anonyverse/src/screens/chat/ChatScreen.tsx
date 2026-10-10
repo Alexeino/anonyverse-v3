@@ -18,6 +18,8 @@ import {
 import { KeyboardStickyView, useKeyboardState } from 'react-native-keyboard-controller';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
+import { Icon } from '../../components/Icon/Icon';
+import { ICON_BUTTON_SIZE, IconButton } from '../../components/IconButton/IconButton';
 import { colors, fontFamily, radii, spacing, typography } from '../../design/tokens';
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
 import type { ReportService } from '../../services/report/ReportService';
@@ -180,23 +182,14 @@ export function ChatScreen({
           </View>
 
           <View style={styles.headerActions}>
-            <Pressable
+            <IconButton
+              icon="flag"
+              color={colors.danger}
               onPress={handleOpenReport}
-              accessibilityRole="button"
               accessibilityLabel="Report this user"
-              style={({ pressed }) => [styles.reportButton, pressed && styles.pressed]}
-            >
-              <Text style={styles.reportGlyph}>{'⚑'}</Text>
-            </Pressable>
+            />
 
-            <Pressable
-              onPress={onOpenSettings}
-              accessibilityRole="button"
-              accessibilityLabel="Settings"
-              style={({ pressed }) => [styles.reportButton, pressed && styles.pressed]}
-            >
-              <Text style={styles.settingsGlyph}>{'⚙'}</Text>
-            </Pressable>
+            <IconButton icon="settings" onPress={onOpenSettings} accessibilityLabel="Settings" />
           </View>
         </View>
 
@@ -253,7 +246,9 @@ export function ChatScreen({
                 accessibilityLabel="Cancel reply"
                 hitSlop={8}
               >
-                <Text style={styles.replyComposerClose}>{'✕'}</Text>
+                <View style={styles.replyComposerClose}>
+                  <Icon name="close" size={16} color={colors.inkMuted} />
+                </View>
               </Pressable>
             </View>
           ) : null}
@@ -279,7 +274,7 @@ export function ChatScreen({
               style={({ pressed }) => [styles.sendButton, pressed && styles.pressed]}
             >
               <Animated.View style={{ transform: [{ scale: sendButtonScale }] }}>
-                <Text style={styles.sendGlyph}>{'↑'}</Text>
+                <Icon name="arrowUp" color={colors.white} />
               </Animated.View>
             </Pressable>
           </View>
@@ -588,14 +583,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: spacing.screenHorizontal,
-    paddingTop: 12,
+    paddingTop: spacing.screenTop,
     paddingBottom: 8,
   },
   pressed: {
     opacity: 0.85,
   },
   skipButton: {
-    height: 36,
+    height: ICON_BUTTON_SIZE,
     paddingHorizontal: 16,
     borderRadius: radii.pill,
     alignItems: 'center',
@@ -623,14 +618,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  reportButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.overlayBackground,
   },
   unavailableToastWrap: {
     position: 'absolute',
@@ -690,14 +677,6 @@ const styles = StyleSheet.create({
     fontFamily: fontFamily.semiBold,
     fontSize: 13,
     color: colors.white,
-  },
-  reportGlyph: {
-    fontSize: 15,
-    color: colors.danger,
-  },
-  settingsGlyph: {
-    fontSize: 16,
-    color: colors.ink,
   },
   edgeSwipe: {
     position: 'absolute',
@@ -954,8 +933,6 @@ const styles = StyleSheet.create({
     color: colors.body,
   },
   replyComposerClose: {
-    fontSize: 16,
-    color: colors.inkMuted,
     paddingHorizontal: 6,
   },
   input: {
@@ -989,10 +966,5 @@ const styles = StyleSheet.create({
     shadowOpacity: 1,
     shadowRadius: 10,
     elevation: 4,
-  },
-  sendGlyph: {
-    fontFamily: fontFamily.bold,
-    fontSize: 18,
-    color: colors.white,
   },
 });

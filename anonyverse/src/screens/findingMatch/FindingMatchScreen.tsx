@@ -1,11 +1,12 @@
 import React from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Defs, RadialGradient, Rect, Stop } from 'react-native-svg';
 import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
+import { IconButton } from '../../components/IconButton/IconButton';
 import { MascotPair } from '../../components/MascotPair/MascotPair';
 import { StatusCard } from '../../components/StatusCard/StatusCard';
-import { colors, fontFamily, spacing, typography } from '../../design/tokens';
+import { colors, spacing, typography } from '../../design/tokens';
 import { rgbaAlpha } from '../../design/svgColor';
 import type { ChatSocketService } from '../../services/chatSocket/ChatSocketService';
 import { createSocketIoChatSocketService } from '../../services/chatSocket/socketIoChatSocketService';
@@ -49,14 +50,7 @@ export function FindingMatchScreen({ selection, onClose, onMatched, onReauthRequ
       <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
         <View style={styles.content}>
           <View style={styles.header}>
-            <Pressable
-              onPress={handleClose}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel search"
-              style={({ pressed }) => [styles.closeButton, pressed && styles.closeButtonPressed]}
-            >
-              <Text style={styles.closeGlyph}>{'×'}</Text>
-            </Pressable>
+            <IconButton icon="close" onPress={handleClose} accessibilityLabel="Cancel search" />
           </View>
 
           <Text style={[typography.headline, styles.headline]}>Finding a connection</Text>
@@ -149,33 +143,12 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingHorizontal: spacing.screenHorizontal,
-    paddingTop: 20,
+    paddingTop: spacing.screenTop,
     paddingBottom: 24,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-  },
-  closeButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.overlayBackground,
-    shadowColor: colors.cardShadow,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 1,
-    shadowRadius: 12,
-    elevation: 3,
-  },
-  closeButtonPressed: {
-    opacity: 0.85,
-  },
-  closeGlyph: {
-    fontFamily: fontFamily.semiBold,
-    fontSize: 19,
-    color: colors.ink,
   },
   headline: {
     marginTop: 28,

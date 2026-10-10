@@ -1,8 +1,9 @@
 import React from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Circle, Defs, RadialGradient, Stop } from 'react-native-svg';
 import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
+import { IconButton } from '../../components/IconButton/IconButton';
 import { PrimaryButton } from '../../components/PrimaryButton/PrimaryButton';
 import { colors, spacing, typography } from '../../design/tokens';
 import { rgbaAlpha } from '../../design/svgColor';
@@ -36,15 +37,8 @@ export function ChatListScreen({ onStartChat, onOpenSettings }: ChatListScreenPr
       <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
         <View style={styles.content}>
           <View style={styles.header}>
-            <Text style={styles.wordmark}>ANONYVERSE</Text>
-            <Pressable
-              onPress={onOpenSettings}
-              accessibilityRole="button"
-              accessibilityLabel="Settings"
-              style={styles.settingsButton}
-            >
-              <Text style={styles.settingsIcon}>{'⚙'}</Text>
-            </Pressable>
+            <Text style={typography.wordmark}>ANONYVERSE</Text>
+            <IconButton icon="settings" onPress={onOpenSettings} accessibilityLabel="Settings" />
           </View>
 
           <View style={styles.spacerTop} />
@@ -120,7 +114,7 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingHorizontal: spacing.screenHorizontal,
-    paddingTop: 20,
+    paddingTop: spacing.screenTop,
     paddingBottom: 24,
     alignItems: 'center',
   },
@@ -129,30 +123,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  wordmark: {
-    fontFamily: typography.wordmark.fontFamily,
-    fontSize: 11.5,
-    letterSpacing: 2.76,
-    color: colors.body,
-    textTransform: 'uppercase',
-  },
-  settingsButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.overlayBackground,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: colors.cardShadow,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 1,
-    shadowRadius: 12,
-    elevation: 3,
-  },
-  settingsIcon: {
-    fontSize: 18,
-    color: colors.ink,
   },
   spacerTop: {
     flex: 1,

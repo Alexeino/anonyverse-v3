@@ -13,6 +13,7 @@ import {
 import { BlurView } from '@react-native-community/blur';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Icon } from '../../components/Icon/Icon';
 import { colors, fontFamily, radii, typography } from '../../design/tokens';
 import type { ReportType } from '../../services/report/types';
 
@@ -112,7 +113,7 @@ export function ReportSheet({ submitting, onDismiss, onSubmit }: ReportSheetProp
 
             <View style={styles.headerRow}>
               <View style={styles.flagTile}>
-                <Text style={styles.flagGlyph}>{'⚑'}</Text>
+                <Icon name="flag" size={18} color={colors.danger} />
               </View>
               <Text style={styles.title} accessibilityRole="header">
                 Report this person
@@ -249,11 +250,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.dangerBadgeBackground,
-  },
-  flagGlyph: {
-    fontFamily: fontFamily.bold,
-    fontSize: 16,
-    color: colors.danger,
   },
   title: {
     flex: 1,

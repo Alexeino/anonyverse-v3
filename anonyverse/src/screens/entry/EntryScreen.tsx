@@ -20,7 +20,7 @@ import {
   GreetingBubbles,
 } from '../../components/GreetingBubbles/GreetingBubbles';
 import { PrimaryButton } from '../../components/PrimaryButton/PrimaryButton';
-import { fontFamily } from '../../design/tokens';
+import { colors, fontFamily, spacing, typography } from '../../design/tokens';
 import { secureDeviceIdentityService } from '../../services/deviceIdentity/secureDeviceIdentityService';
 import { restAuthService } from '../../services/auth/restAuthService';
 import { inMemorySessionStore } from '../../services/session/inMemorySessionStore';
@@ -34,16 +34,15 @@ const MASCOT_ASPECT = 1170 / 1098;
 const MASCOT_TOP_INSET = 51 / 1098;
 
 const palette = {
-  backgroundTop: '#FFF8FF',
-  backgroundMid: '#FBF0FC',
-  backgroundBottom: '#F1E7FA',
-  glowPurple: '#DDC2FF',
-  glowLilac: '#DCCDF4',
-  brand: '#6F3D8D',
-  headline: '#33205E',
-  accent: '#BB2AA6',
-  subtitle: '#716781',
-  note: '#877C90',
+  backgroundTop: colors.gradientBackground[0],
+  backgroundMid: colors.gradientBackground[1],
+  backgroundBottom: colors.gradientBackground[2],
+  glowPurple: colors.blobPurple[0],
+  glowLilac: colors.blobPurple[1],
+  headline: colors.ink,
+  accent: colors.accentPink,
+  subtitle: colors.body,
+  note: colors.body,
 };
 
 export interface EntryScreenProps {
@@ -131,7 +130,7 @@ export function EntryScreen({ onContinue }: EntryScreenProps) {
           },
         ]}
       >
-        <Text style={styles.brand}>ANONYVERSE</Text>
+        <Text style={[typography.wordmark, styles.brand]}>ANONYVERSE</Text>
 
         <View
           style={styles.mascotArea}
@@ -214,12 +213,8 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   brand: {
-    marginTop: 14,
-    marginHorizontal: 25,
-    fontFamily: fontFamily.bold,
-    fontSize: 10,
-    letterSpacing: 3.4,
-    color: palette.brand,
+    marginTop: spacing.screenTop,
+    marginHorizontal: spacing.screenHorizontal,
   },
   bubbles: {
     zIndex: 1,
@@ -296,6 +291,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 10,
     marginBottom: -10,
-    color: 'purple',
+    color: colors.ink,
   },
 });

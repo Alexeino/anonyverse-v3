@@ -61,6 +61,7 @@ export const spacing = {
   lg: 24,
   xl: 32,
   screenHorizontal: 28,
+  screenTop: 20,
 } as const;
 
 export const radii = {

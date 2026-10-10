@@ -8,33 +8,41 @@ export const GREETING_BUBBLES_COMPACT_HEIGHT = 48;
 type Tone = 'pink' | 'blue' | 'soft';
 type Tail = 'left' | 'right' | 'none';
 
-const bubbles: { text: string; tone: Tone; tail: Tail; position: ViewStyle }[] =
-  [
-    {
-      text: 'Halo!',
-      tone: 'soft',
-      tail: 'none',
-      position: { left: '45%', top: 18 },
-    },
-    {
-      text: 'Hoi!',
-      tone: 'blue',
-      tail: 'right',
-      position: { right: '2%', top: 26 },
-    },
-    {
-      text: 'Hola!',
-      tone: 'soft',
-      tail: 'none',
-      position: { left: '25%', top: 78 },
-    },
-    {
-      text: 'Ciao!',
-      tone: 'pink',
-      tail: 'left',
-      position: { left: '56%', top: 100 },
-    },
-  ];
+const bubbles: {
+  text: string;
+  tone: Tone;
+  tail: Tail;
+  position: ViewStyle;
+  compactPosition?: ViewStyle;
+}[] = [
+  {
+    text: 'Halo!',
+    tone: 'soft',
+    tail: 'none',
+    position: { left: '45%', top: 18 },
+    compactPosition: { left: '38%', top: 0 },
+  },
+  {
+    text: 'Hoi!',
+    tone: 'blue',
+    tail: 'right',
+    position: { right: '2%', top: 26 },
+    compactPosition: { right: '2%', top: 8 },
+  },
+  {
+    text: 'Hola!',
+    tone: 'soft',
+    tail: 'none',
+    position: { left: '25%', top: 78 },
+  },
+  {
+    text: 'Ciao!',
+    tone: 'pink',
+    tail: 'left',
+    position: { left: '56%', top: 100 },
+    compactPosition: { left: '4%', top: 6 },
+  },
+];
 
 export function GreetingBubbles({ compact = false }: { compact?: boolean }) {
   return (
@@ -48,8 +56,9 @@ export function GreetingBubbles({ compact = false }: { compact?: boolean }) {
         },
       ]}
     >
-      {(compact ? bubbles.slice(0, 3) : bubbles).map(
-        ({ text, tone, tail, position }) => (
+      {bubbles
+        .filter(bubble => !compact || bubble.compactPosition)
+        .map(({ text, tone, tail, position, compactPosition }) => (
           <View
             key={text}
             style={[
@@ -57,7 +66,7 @@ export function GreetingBubbles({ compact = false }: { compact?: boolean }) {
               tone === 'soft' ? styles.softBubble : styles.solidBubble,
               tail === 'left' && styles.tailLeft,
               tail === 'right' && styles.tailRight,
-              position,
+              compact ? compactPosition : position,
             ]}
           >
             <Text
@@ -78,8 +87,7 @@ export function GreetingBubbles({ compact = false }: { compact?: boolean }) {
               {text}
             </Text>
           </View>
-        ),
-      )}
+        ))}
     </View>
   );
 }

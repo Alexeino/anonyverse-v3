@@ -90,6 +90,7 @@ export function VerificationScreen({ onVerified }: VerificationScreenProps) {
                   </View>
                   <MascotPair
                     height={238}
+                    pairWidth={244}
                     leftImage={miliExcited}
                     rightImage={miloProud}
                     leftLayout={{ left: 4, top: 85.72, width: 136, height: 127.78 }}
@@ -100,6 +101,7 @@ export function VerificationScreen({ onVerified }: VerificationScreenProps) {
               ) : displayPhase === 'failed' ? (
                 <MascotPair
                   height={238}
+                  pairWidth={254}
                   leftImage={miliPuzzled}
                   rightImage={miloUnsure}
                   leftLayout={{ left: 6, top: 60, width: 117, height: 131 }}
@@ -109,6 +111,7 @@ export function VerificationScreen({ onVerified }: VerificationScreenProps) {
               ) : (
                 <MascotPair
                   height={238}
+                  pairWidth={248}
                   leftImage={miliChecking}
                   rightImage={miloWaiting}
                   leftLayout={{ left: 0, top: 57.72, width: 132, height: 150.42 }}
@@ -285,7 +288,7 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingHorizontal: spacing.screenHorizontal,
-    paddingTop: 26,
+    paddingTop: spacing.screenTop,
     paddingBottom: 24,
   },
   mascotArea: {

@@ -194,7 +194,7 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingHorizontal: spacing.screenHorizontal,
-    paddingTop: 26,
+    paddingTop: spacing.screenTop,
     paddingBottom: 24,
   },
   headline: {

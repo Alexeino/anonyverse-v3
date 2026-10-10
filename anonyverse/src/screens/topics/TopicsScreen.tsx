@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { BackgroundGradient } from '../../components/BackgroundGradient/BackgroundGradient';
+import { IconButton } from '../../components/IconButton/IconButton';
 import { PrimaryButton } from '../../components/PrimaryButton/PrimaryButton';
 import { colors, fontFamily, spacing, typography } from '../../design/tokens';
 import type { Mood } from '../moodSelect/MoodSelectScreen';
@@ -190,17 +191,14 @@ export function TopicsScreen({ mood, onFindSomeone, onBack }: TopicsScreenProps)
       <BackgroundGradient />
 
       <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
-        <View style={[styles.content, onBack && styles.contentWithBack]}>
+        <View style={styles.content}>
           {onBack ? (
-            <Pressable
+            <IconButton
+              icon="back"
               onPress={onBack}
-              accessibilityRole="button"
               accessibilityLabel="Back to mood"
-              hitSlop={6}
-              style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-            >
-              <Text style={styles.backGlyph}>{'←'}</Text>
-            </Pressable>
+              style={styles.backButton}
+            />
           ) : null}
           <View style={styles.header}>
             <Text style={[typography.headline, styles.headline]}>
@@ -333,33 +331,11 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingHorizontal: spacing.screenHorizontal,
-    paddingTop: 26,
+    paddingTop: spacing.screenTop,
     paddingBottom: 24,
   },
-  contentWithBack: {
-    paddingTop: 8,
-  },
   backButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
     marginBottom: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.overlayBackground,
-    shadowColor: colors.cardShadow,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 1,
-    shadowRadius: 12,
-    elevation: 3,
-  },
-  backButtonPressed: {
-    opacity: 0.85,
-  },
-  backGlyph: {
-    fontFamily: fontFamily.semiBold,
-    fontSize: 19,
-    color: colors.ink,
   },
   header: {
     flexDirection: 'row',

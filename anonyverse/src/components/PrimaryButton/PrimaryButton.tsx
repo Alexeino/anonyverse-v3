@@ -7,6 +7,7 @@ import {
   View,
 } from 'react-native';
 import { colors, radii, typography } from '../../design/tokens';
+import { Icon } from '../Icon/Icon';
 
 type PrimaryButtonProps =
   | {
@@ -73,7 +74,7 @@ export function PrimaryButton(props: PrimaryButtonProps) {
       style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
     >
       <Text style={[typography.button, styles.label]}>{props.label}</Text>
-      <Text style={[typography.button, styles.arrow]}>{'→'}</Text>
+      <Icon name="arrowRight" size={18} color={colors.white} />
     </Pressable>
   );
 }
@@ -116,8 +117,5 @@ const styles = StyleSheet.create({
     color: colors.disabledButtonText,
     fontFamily: typography.body.fontFamily,
     fontSize: 13,
-  },
-  arrow: {
-    fontFamily: typography.button.fontFamily,
   },
 });
